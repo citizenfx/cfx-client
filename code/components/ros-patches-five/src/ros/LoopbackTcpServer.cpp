@@ -1675,7 +1675,8 @@ void OnPreInitHook()
 
 	MH_Initialize();
 
-	LoadLibrary(L"wininet.dll");
+	if(!LoadLibrary(L"wininet.dll"))
+		trace("Could not load wininet.dll\n");
 
 #define DO_HOOK(dll, func, ep, oldEP) \
 	{ auto err = MH_CreateHookApi(dll, func, ep, reinterpret_cast<void**>(&oldEP)); assert(err == MH_OK); }
