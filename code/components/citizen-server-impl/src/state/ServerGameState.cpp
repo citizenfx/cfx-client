@@ -993,6 +993,8 @@ void ServerGameState::Tick(fx::ServerInstanceBase* instance)
 									{ "player", fmt::sprintf("%d", entityClient->GetNetId()) },
 									{ "for", fmt::sprintf("%d", client->GetNetId()) }
 								});
+
+								m_playerScopes[client->GetNetId()][entityClient->GetNetId()] = true;
 							}
 							else
 							{
@@ -1031,6 +1033,8 @@ void ServerGameState::Tick(fx::ServerInstanceBase* instance)
 
 							clientData->slotsToPlayers.erase(slotId);
 							clientData->playersToSlots.erase(entityClient->GetNetId());
+
+							m_playerScopes[client->GetNetId()].erase(entityClient->GetNetId());
 						}
 					}
 				}
@@ -1769,6 +1773,18 @@ void ServerGameState::HandleClientDrop(const std::shared_ptr<fx::Client>& client
 				clientData->slotsToPlayers.erase(si->second);
 				clientData->playersToSlots.erase(si);
 			}
+
+			auto& scope = m_playerScopes.find(tgtClient->GetNetId());
+
+			if (scope != m_playerScopes.end())
+			{
+				auto b = scope->second.find(client->GetNetId());
+
+				if (b != scope->second.end())
+				{
+					scope->second.erase(b);
+				}
+			}
 		});
 	}
 
@@ -1848,6 +1864,13 @@ void ServerGameState::HandleClientDrop(const std::shared_ptr<fx::Client>& client
 				});
 			}
 		}
+	}
+
+	auto scope = m_playerScopes.find(client->GetNetId());
+
+	if (scope != m_playerScopes.end())
+	{
+		m_playerScopes.erase(scope);
 	}
 }
 
