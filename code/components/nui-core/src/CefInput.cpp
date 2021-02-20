@@ -70,6 +70,11 @@ namespace nui
 
 	extern fwRefContainer<NUIWindow> FindNUIWindow(fwString windowName);
 
+	bool HasFocus()
+	{
+		return (g_hasFocus || g_hasOverriddenFocus);
+	}
+
 	void GiveFocus(const std::string& frameName, bool hasFocus, bool hasCursor)
 	{
 		if (!HasFocus() && hasFocus)
