@@ -70,6 +70,11 @@ namespace nui
 		return (g_hasFocus || g_hasOverriddenFocus);
 	}
 
+	bool HasFocusKeepInput()
+	{
+		return g_keepInput;
+	}
+
 	void GiveFocus(const std::string& frameName, bool hasFocus, bool hasCursor)
 	{
 		if (!HasFocus() && hasFocus)
