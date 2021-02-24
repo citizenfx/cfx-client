@@ -318,12 +318,12 @@ static InitFunction initFunction([] ()
 		});
 	});
 
-	fx::ScriptEngine::RegisterNativeHandler("NUI_HAS_FOCUS", [] (fx::ScriptContext& context)
+	fx::ScriptEngine::RegisterNativeHandler("IS_NUI_FOCUSED", [] (fx::ScriptContext& context)
 	{
 		context.SetResult(nui::HasFocus());
 	});
 
-	fx::ScriptEngine::RegisterNativeHandler("NUI_HAS_FOCUS_KEEP_INPUT", [] (fx::ScriptContext& context)
+	fx::ScriptEngine::RegisterNativeHandler("IS_NUI_FOCUS_KEEPING_INPUT", [] (fx::ScriptContext& context)
 	{
 		context.SetResult(nui::HasFocusKeepInput());
 	});
