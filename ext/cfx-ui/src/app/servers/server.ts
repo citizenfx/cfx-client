@@ -5,6 +5,10 @@ import { master } from './master';
 
 import { Avatar } from './avatar';
 
+import emojiRegex from 'emoji-regex';
+
+const emojiPreRe = new RegExp('^' + emojiRegex().source);
+
 export class Server {
     readonly hostname: string;
     readonly sortname: string;
@@ -64,7 +68,7 @@ export class Server {
             gametype: object.gametype
         };
 
-        const server = new Server(sanitizer, object.addr, { ...mappedData });
+        const server = new Server(sanitizer, object.addr, { ...object, ...mappedData });
 
         if (object.infoBlob) {
             if (object.infoBlob.icon) {
@@ -134,6 +138,27 @@ export class Server {
         this.data = object;
         this.int = object;
         this.connectEndPoints = object.connectEndPoints;
+
+		if (this.data?.vars?.sv_projectName?.length >= 50) {
+			this.data.vars.sv_projectName = this.data.vars.sv_projectName.substring(0, 50);
+		}
+
+		if (this.data?.vars?.sv_projectDesc?.length >= 125) {
+			this.data.vars.sv_projectDesc = this.data.vars.sv_projectDesc.substring(0, 125);
+		}
+
+		const filterSplit = (a: string) => a.split(/(\s\/+\s|\||\s-+\s)/)[0].trim();
+
+		if (this.data?.vars?.sv_projectName) {
+			this.data.vars.sv_projectName = filterSplit(this.data.vars.sv_projectName)
+				.replace(/(.)\^[0-9]/g, '$1') // any non-prefixed color codes
+				.replace(/^\[..\]/, '') // country prefixes
+				.replace(emojiPreRe, ''); // emoji prefixes
+		}
+
+		if (this.data?.vars?.sv_projectDesc) {
+			this.data.vars.sv_projectDesc = filterSplit(this.data.vars.sv_projectDesc).replace(/\^[0-9]/g, '');
+		}
 
         if (!object.iconVersion && sanitizer) {
             this.setDefaultIcon();

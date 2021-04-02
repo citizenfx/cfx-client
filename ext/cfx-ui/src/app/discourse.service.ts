@@ -30,7 +30,8 @@ export class DiscourseUser {
 	isPremium: boolean;
 
 	getAvatarUrl(size = 250): string {
-		return 'https://forum.cfx.re' + this.avatarTemplate.replace('{size}', size.toString());
+		const prefix = this.avatarTemplate[0] === '/' ? 'https://forum.cfx.re' : '';
+		return prefix + this.avatarTemplate.replace('{size}', size.toString());
 	}
 
 	getAvatarUrlForCss(size = 250): string {
@@ -59,7 +60,7 @@ export class BoostData {
 
 @Injectable()
 export class DiscourseService {
-	private static BASE_URL = 'https://forum.fivem.net';
+	private static BASE_URL = 'https://forum.cfx.re';
 
 	private rsaKeys: RSAKeyCollection;
 	private clientId: string;

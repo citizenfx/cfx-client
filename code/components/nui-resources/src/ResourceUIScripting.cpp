@@ -17,6 +17,8 @@
 #include <scrBind.h>
 #include <IteratorView.h>
 
+#include <CrossBuildRuntime.h>
+
 #include <sstream>
 #include <string_view>
 
@@ -299,6 +301,40 @@ static InitFunction initFunction([] ()
 		.AddMethod("SEND_DUI_MOUSE_WHEEL", &NUIWindowWrapper::InjectMouseWheel)
 		.AddMethod("DESTROY_DUI", &NUIWindowWrapper::Destroy);		
 
+	// this *was* a multiset before but some resources would not correctly pair set/unset and then be stuck in 'set' state
+	static std::unordered_set<std::string> focusVotes;
+	static std::unordered_set<std::string> focusCursorVotes;
+	static std::unordered_set<std::string> focusKeepInputVotes;
+
+	static bool lastFocus = false;
+	static bool lastFocusCursor = false;
+	static bool lastFocusKeepInput = false;
+
+	static auto updateFocus = []()
+	{
+		{
+			auto shouldFocus = !focusVotes.empty();
+			auto shouldCursor = !focusCursorVotes.empty();
+
+			if (shouldFocus != lastFocus || shouldCursor != lastFocusCursor)
+			{
+				nui::GiveFocus("", shouldFocus, shouldCursor);
+				lastFocus = shouldFocus;
+				lastFocusCursor = shouldCursor;
+			}
+		}
+
+		{
+			auto shouldKeepInput = !focusKeepInputVotes.empty();
+
+			if (shouldKeepInput != lastFocusKeepInput)
+			{
+				nui::KeepInput(shouldKeepInput);
+				lastFocusKeepInput = shouldKeepInput;
+			}
+		}
+	};
+
 	fx::Resource::OnInitializeInstance.Connect([](fx::Resource* resource)
 	{
 		resource->OnStop.Connect([resource]()
@@ -315,6 +351,12 @@ static InitFunction initFunction([] ()
 					nuiWindows.erase(dui.second);
 				}
 			}
+
+			focusVotes.erase(resourceName);
+			focusKeepInputVotes.erase(resourceName);
+			focusCursorVotes.erase(resourceName);
+
+			updateFocus();
 		});
 	});
 
@@ -347,13 +389,32 @@ static InitFunction initFunction([] ()
 						if (resource->GetName().find('"') == std::string::npos)
 						{
 							bool hasFocus = context.GetArgument<bool>(0);
+							bool hasCursor = context.GetArgument<bool>(1);
 
 #ifndef USE_NUI_ROOTLESS
 							const char* functionName = (hasFocus) ? "focusFrame" : "blurFrame";
 							nui::PostRootMessage(fmt::sprintf(R"({ "type": "%s", "frameName": "%s" } )", functionName, resource->GetName()));
 #endif
 
-							nui::GiveFocus(resource->GetName(), hasFocus, context.GetArgument<bool>(1));
+							if (hasFocus)
+							{
+								focusVotes.insert(resource->GetName());
+							}
+							else if (auto it = focusVotes.find(resource->GetName()); it != focusVotes.end())
+							{
+								focusVotes.erase(it);
+							}
+
+							if (hasCursor)
+							{
+								focusCursorVotes.insert(resource->GetName());
+							}
+							else if (auto it = focusCursorVotes.find(resource->GetName()); it != focusCursorVotes.end())
+							{
+								focusCursorVotes.erase(it);
+							}
+
+							updateFocus();
 						}
 					}
 				}
@@ -365,15 +426,7 @@ static InitFunction initFunction([] ()
 	{
 		POINT cursorPos;
 		GetCursorPos(&cursorPos);
-		ScreenToClient(FindWindow(
-#ifdef GTA_FIVE
-			L"grcWindow"
-#elif defined(IS_RDR3)
-			L"sgaWindow"
-#else
-			L"UNKNOWN_WINDOW"
-#endif
-		, nullptr), &cursorPos);
+		ScreenToClient(FindWindow(xbr::GetGameWndClass(), nullptr), &cursorPos);
 
 		*context.GetArgument<int*>(0) = cursorPos.x;
 		*context.GetArgument<int*>(1) = cursorPos.y;
@@ -385,7 +438,29 @@ static InitFunction initFunction([] ()
 
 		if (FX_SUCCEEDED(fx::GetCurrentScriptRuntime(&runtime)))
 		{
-			nui::KeepInput(context.GetArgument<bool>(0));
+			fx::Resource* resource = reinterpret_cast<fx::Resource*>(runtime->GetParentObject());
+
+			if (resource)
+			{
+				bool shouldKeepInput = context.GetArgument<bool>(0);
+
+				auto& voteList = focusKeepInputVotes;
+
+				if (shouldKeepInput)
+				{
+					voteList.insert(resource->GetName());
+				}
+				else
+				{
+					// remove just one entry
+					if (auto it = voteList.find(resource->GetName()); it != voteList.end())
+					{
+						voteList.erase(it);
+					}
+				}
+
+				updateFocus();
+			}
 		}
 	});
 });

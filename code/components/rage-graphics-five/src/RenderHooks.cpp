@@ -38,6 +38,33 @@ DLL_EXPORT fwEvent<bool*> OnFlipModelHook;
 fwEvent<bool*> OnRequestInternalScreenshot;
 fwEvent<const uint8_t*, int, int> OnInternalScreenshot;
 
+struct WaitableTimer {
+	WaitableTimer(
+		_In_opt_ LPSECURITY_ATTRIBUTES lpTimerAttributes,
+		_In_ BOOL bManualReset,
+		_In_opt_ LPCWSTR lpTimerName
+	) : handle(CreateWaitableTimer(lpTimerAttributes, bManualReset, lpTimerName)) {}
+	~WaitableTimer() { CloseHandle(handle); }
+
+	template<class Rep, class Period = std::ratio<1>>
+	BOOL Wait(std::chrono::duration<Rep, Period> dueTime)
+	{
+		LARGE_INTEGER liDueTime;
+
+		liDueTime.QuadPart = -(LONGLONG)(std::chrono::duration_cast<std::chrono::microseconds>(dueTime).count() * 10);
+
+		if (handle && SetWaitableTimer(handle, &liDueTime, 0, NULL, NULL, 0))
+		{
+			WaitForSingleObject(handle, INFINITE);
+			return TRUE;
+		}
+
+		return FALSE;
+	}
+private:
+	HANDLE handle;
+};
+
 static void* g_lastBackbufTexture;
 static bool g_useFlipModel = false;
 
@@ -90,6 +117,8 @@ fwEvent<IDXGIFactory2*, ID3D11Device*, HWND, DXGI_SWAP_CHAIN_DESC1*, DXGI_SWAP_C
 
 #include <mmsystem.h>
 
+using namespace std::chrono_literals;
+
 class BufferBackedDXGISwapChain : public WRL::RuntimeClass<WRL::RuntimeClassFlags<WRL::ClassicCom>, IDXGISwapChain>
 {
 public:
@@ -126,6 +155,26 @@ public:
 
 		static HostSharedData<ReverseGameData> rgd("CfxReverseGameData");
 
+		GetD3D11DeviceContext()->Flush();
+
+		static auto getNowUs = []()
+		{
+			return std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now().time_since_epoch());
+		};
+		static std::chrono::microseconds lastFrameTime{ 0 };
+
+		if (rgd->fpsLimit > 0)
+		{
+			std::chrono::microseconds fpsLimitUs{ 1000000 / rgd->fpsLimit };
+
+			auto timeLeft = std::chrono::duration_cast<std::chrono::microseconds>(fpsLimitUs - (getNowUs() - lastFrameTime));
+
+			if (timeLeft > 0us)
+			{
+				m_fpsLimitTimer.Wait(timeLeft);
+			}
+		}
+
 		int idx = rgd->GetNextSurface(INFINITE);
 
 		if (idx >= 0)
@@ -140,6 +189,8 @@ public:
 		{
 			trace("frame dropped - presenter was busy?\n");
 		}
+
+		lastFrameTime = getNowUs();
 
 		return S_OK;
 	}
@@ -171,13 +222,14 @@ public:
 private:
 	WRL::ComPtr<ID3D11Texture2D> m_texture;
 	WRL::ComPtr<ID3D11Texture2D> m_frontTextures[4];
+	WaitableTimer m_fpsLimitTimer;
 
 public:
 	DXGI_SWAP_CHAIN_DESC desc;
 	ID3D11Device* device;
 
 	BufferBackedDXGISwapChain(ID3D11Device* device, DXGI_SWAP_CHAIN_DESC desc)
-		: desc(desc), device(device)
+		: desc(desc), device(device), m_fpsLimitTimer(NULL, TRUE, NULL)
 	{
 		RecreateFromDesc();
 	}
@@ -924,7 +976,26 @@ void RenderBufferToBuffer(ID3D11RenderTargetView* rtv, int width = 0, int height
 	}
 
 	// guess what we can't just CopyResource, so time for copy/pasted D3D11 garbage
+	if (backBuf)
 	{
+		WRL::ComPtr<IUnknown> realSrvUnk;
+		WRL::ComPtr<ID3D11ShaderResourceView> realSrv;
+
+		backBuf->m_srv2->QueryInterface(IID_PPV_ARGS(&realSrvUnk));
+		realSrvUnk.As(&realSrv);
+
+		WRL::ComPtr<IDXGIDevice> realDeviceDxgi;
+		WRL::ComPtr<ID3D11Device> realDevice;
+
+		GetD3D11Device()->QueryInterface(IID_PPV_ARGS(&realDeviceDxgi));
+		realDeviceDxgi.As(&realDevice);
+
+		WRL::ComPtr<IUnknown> realDeviceContextUnk;
+		WRL::ComPtr<ID3D11DeviceContext> realDeviceContext;
+
+		GetD3D11DeviceContext()->QueryInterface(IID_PPV_ARGS(&realDeviceContextUnk));
+		realDeviceContextUnk.As(&realDeviceContext);
+
 		auto m_width = resDesc.Width;
 		auto m_height = resDesc.Height;
 
@@ -937,30 +1008,30 @@ void RenderBufferToBuffer(ID3D11RenderTargetView* rtv, int width = 0, int height
 		static ID3D11PixelShader* ps;
 
 		static std::once_flag of;
-		std::call_once(of, []()
+		std::call_once(of, [&realDevice]()
 		{
 			D3D11_SAMPLER_DESC sd = CD3D11_SAMPLER_DESC(CD3D11_DEFAULT());
-			GetD3D11Device()->CreateSamplerState(&sd, &ss);
+			realDevice->CreateSamplerState(&sd, &ss);
 
 			D3D11_BLEND_DESC bd = CD3D11_BLEND_DESC(CD3D11_DEFAULT());
 			bd.RenderTarget[0].BlendEnable = FALSE;
 
-			GetD3D11Device()->CreateBlendState(&bd, &bs);
+			realDevice->CreateBlendState(&bd, &bs);
 
-			GetD3D11Device()->CreateVertexShader(quadVS, sizeof(quadVS), nullptr, &vs);
-			GetD3D11Device()->CreatePixelShader(quadPS, sizeof(quadPS), nullptr, &ps);
+			realDevice->CreateVertexShader(quadVS, sizeof(quadVS), nullptr, &vs);
+			realDevice->CreatePixelShader(quadPS, sizeof(quadPS), nullptr, &ps);
 		});
 
 		ID3DUserDefinedAnnotation* pPerf = NULL;
-		GetD3D11DeviceContext()->QueryInterface(__uuidof(pPerf), reinterpret_cast<void**>(&pPerf));
+		realDeviceContext->QueryInterface(__uuidof(pPerf), reinterpret_cast<void**>(&pPerf));
 
 		if (pPerf)
 		{
 			pPerf->BeginEvent(L"DrawRenderTexture");
 		}
 
-		auto deviceContext = GetD3D11DeviceContext();
-
+		auto deviceContext = realDeviceContext;
+		
 		ID3D11RenderTargetView* oldRtv = nullptr;
 		ID3D11DepthStencilView* oldDsv = nullptr;
 		deviceContext->OMGetRenderTargets(1, &oldRtv, &oldDsv);
@@ -990,9 +1061,14 @@ void RenderBufferToBuffer(ID3D11RenderTargetView* rtv, int width = 0, int height
 		deviceContext->OMSetRenderTargets(1, &rtv, nullptr);
 		deviceContext->OMSetBlendState(bs, nullptr, 0xffffffff);
 
+		ID3D11ShaderResourceView* srvs[] =
+		{
+			realSrv.Get()
+		};
+
 		deviceContext->PSSetShader(ps, nullptr, 0);
 		deviceContext->PSSetSamplers(0, 1, &ss);
-		deviceContext->PSSetShaderResources(0, 1, &backBuf->m_srv2);
+		deviceContext->PSSetShaderResources(0, 1, srvs);
 
 		deviceContext->VSSetShader(vs, nullptr, 0);
 
@@ -1205,11 +1281,6 @@ void CaptureInternalScreenshot()
 
 void CaptureBufferOutput()
 {
-	if (launch::IsSDKGuest())
-	{
-		return;
-	}
-
 	static HostSharedData<GameRenderData> handleData("CfxGameRenderHandle");
 
 	static D3D11_TEXTURE2D_DESC resDesc;

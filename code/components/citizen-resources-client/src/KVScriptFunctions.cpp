@@ -10,6 +10,8 @@
 #include <fxScripting.h>
 #include <CL2LaunchMode.h>
 
+#include <Error.h>
+
 leveldb::Env* GetVFSEnvironment();
 
 struct DatabaseHolder
@@ -50,7 +52,10 @@ struct DatabaseHolder
 			}
 		}
 
-		assert(status.ok());
+		if (!status.ok())
+		{
+			FatalError("Failed to open client KVS LevelDB %s: %s", dbName, status.ToString());
+		}
 
 		db = std::unique_ptr<leveldb::DB>(dbPointer);
 		dbPointer = nullptr; // as the unique_ptr 'owns' it now
@@ -370,7 +375,7 @@ struct KvpBulkStream
 
 	size_t ReadBulk(uint64_t ptr, void* outBuffer, size_t size)
 	{
-		size_t toRead = std::min(m_value.size() - ptr, size);
+		size_t toRead = std::min(size_t(m_value.size() - ptr), size);
 		memcpy(outBuffer, m_value.data() + ptr, toRead);
 
 		return toRead;

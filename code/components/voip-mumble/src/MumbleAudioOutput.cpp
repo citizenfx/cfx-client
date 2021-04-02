@@ -19,6 +19,8 @@
 #include <mmsystem.h>
 #include <CoreConsole.h>
 
+#include <speex/speex_jitter.h>
+
 #include <xaudio2fx.h>
 
 #include <Error.h>
@@ -219,7 +221,25 @@ MumbleAudioOutput::ClientAudioStateBase::ClientAudioStateBase()
 	position[2] = 0.0f;
 	distance = 0.0f;
 
+	jitter = jitter_buffer_init(48000 / 100);
+
+	int margin = 2 * (48000 / 100);
+	jitter_buffer_ctl(jitter, JITTER_BUFFER_SET_MARGIN, &margin);
+
 	lastTime = timeGetTime();
+
+	pfBuffer = new float[iBufferSize];
+}
+
+MumbleAudioOutput::ClientAudioStateBase::~ClientAudioStateBase()
+{
+	if (jitter != nullptr)
+	{
+		jitter_buffer_destroy(jitter);
+		jitter = nullptr;
+	}
+
+	delete[] pfBuffer;
 }
 
 MumbleAudioOutput::ClientAudioState::ClientAudioState()
@@ -436,12 +456,27 @@ OnSetMumbleVolume;
 MumbleAudioOutput::ExternalAudioState::ExternalAudioState(fwRefContainer<IMumbleAudioSink> sink)
 	: ClientAudioStateBase(), sink(sink)
 {
-
 }
 
 MumbleAudioOutput::ExternalAudioState::~ExternalAudioState()
 {
 	
+}
+
+void MumbleAudioOutput::ExternalAudioState::AfterConstruct()
+{
+	std::weak_ptr thisWeak = shared_from_this();
+
+	sink->SetPollHandler([thisWeak](int numSamples)
+	{
+		auto selfBase = thisWeak.lock();
+
+		if (selfBase)
+		{
+			auto self = std::static_pointer_cast<ExternalAudioState>(selfBase);
+			self->PollAudio(numSamples);
+		}
+	});
 }
 
 void MumbleAudioOutput::ExternalAudioState::PushPosition(MumbleAudioOutput* baseIo, float position[3])
@@ -521,7 +556,7 @@ void MumbleAudioOutput::HandleClientConnect(const MumbleUser& user)
 	{
 		std::unique_lock<std::mutex> initLock(m_initializeMutex);
 
-		if (!m_initialized)
+		if (!m_initialized && !m_initializeSignaled)
 		{
 			m_initializeVar.wait(initLock);
 		}
@@ -541,6 +576,7 @@ void MumbleAudioOutput::HandleClientConnect(const MumbleUser& user)
 		if (sinkRef.GetRef())
 		{
 			auto state = std::make_shared<ExternalAudioState>(sinkRef);
+			state->AfterConstruct();
 
 			int error;
 			state->opus = opus_decoder_create(48000, 1, &error);
@@ -562,6 +598,7 @@ void MumbleAudioOutput::HandleClientConnect(const MumbleUser& user)
 	format.nAvgBytesPerSec = (format.nBlockAlign * format.nSamplesPerSec);
 
 	auto state = std::make_shared<ClientAudioState>();
+	state->AfterConstruct();
 
 	auto xa2 = m_xa2;
 
@@ -640,38 +677,296 @@ void MumbleAudioOutput::HandleClientVoiceData(const MumbleUser& user, uint64_t s
 		return;
 	}
 
-	/*if (sequence < client->sequence)
-	{
-		return;
-	}*/
-
 	client->sequence = sequence;
 
-	auto voiceBuffer = (int16_t*)_aligned_malloc(5760 * 1 * sizeof(int16_t), 16);
-	int len = opus_decode(client->opus, data, size, voiceBuffer, 5760, 0);
+	int numSamples = opus_decoder_get_nb_samples(client->opus, data, size);
+	
+	JitterBufferPacket jbp;
+	jbp.data = const_cast<char*>(reinterpret_cast<const char*>(data));
+	jbp.len = size;
+	jbp.span = numSamples;
+	jbp.timestamp = (48000 / 100) * sequence;
 
-	if (len >= 0)
 	{
-		client->PushSound(voiceBuffer, len);
-		_aligned_free(voiceBuffer);
+		std::unique_lock _(client->jitterLock);
+		jitter_buffer_put(client->jitter, &jbp);
+	}
 
-		client->isTalking = client->isAudible;
-	}
-	else
+	if (client->ShouldManagePoll())
 	{
-		_aligned_free(voiceBuffer);
+		client->PollAudio(numSamples);
 	}
+}
+
+void MumbleAudioOutput::ClientAudioStateBase::resizeBuffer(size_t newsize)
+{
+	if (newsize > iBufferSize)
+	{
+		float* n = new float[newsize];
+		if (pfBuffer)
+		{
+			memcpy(n, pfBuffer, sizeof(float) * iBufferSize);
+			delete[] pfBuffer;
+		}
+		pfBuffer = n;
+		iBufferSize = newsize;
+	}
+}
+
+void MumbleAudioOutput::ClientAudioStateBase::PollAudio(int frameCount)
+{
+	if (sequence == 0)
+	{
+		return;
+	}
+
+	// adapted from Mumble reference code: https://github.com/mumble-voip/mumble/blob/3beb90245cf00f72de217a2819dc7bd1d564f5f9/src/mumble/AudioOutputSpeech.cpp#L219
+	// (c) 2011-2021 The Mumble Developers. 
+
+	unsigned int channels = 1;
+	// Note: all stereo supports are crafted for opus, since other codecs are deprecated and will soon be removed.
+
+	unsigned int sampleCount = frameCount * channels;
+
+	if (iBufferFilled < 0 || iBufferFilled >= iBufferSize)
+	{
+		iBufferFilled = 0;
+	}
+
+	// we can not control exactly how many frames decoder returns
+	// so we need a buffer to keep unused frames
+	// shift the buffer, remove decoded and played frames
+	for (unsigned int i = iLastConsume; i < iBufferFilled; ++i)
+		pfBuffer[i - iLastConsume] = pfBuffer[i];
+
+	iBufferFilled -= iLastConsume;
+
+	iLastConsume = sampleCount;
+
+	auto consume = [this]()
+	{
+		std::vector<int16_t> s16(iLastConsume);
+		for (size_t i = 0; i < iLastConsume; i++)
+		{
+			s16[i] = int16_t(std::clamp(pfBuffer[i] * 32768, -32768.f, 32767.f));
+		}
+
+		PushSound(s16.data(), iLastConsume);
+		isTalking = !quiet && isAudible;
+	};
+
+	if (iBufferFilled >= sampleCount)
+	{
+		consume();
+		return;
+	}
+
+	bLastAlive = true;
+
+	float* pOut;
+	bool nextalive = bLastAlive;
+
+	// 20ms
+	int iOutputSize = 100 * 48;
+	int iFrameSize = 48000 / 100; // 10ms
+
+	while (iBufferFilled < sampleCount)
+	{
+		std::unique_lock _(jitterLock);
+
+		int decodedSamples = iFrameSize;
+		resizeBuffer(iBufferFilled + iOutputSize);
+		// TODO: allocating memory in the audio callback will crash mumble in some cases.
+		//       we need to initialize the buffer with an appropriate size when initializing
+		//       this class. See #4250.
+
+		pOut = (pfBuffer + iBufferFilled);
+
+		if (!bLastAlive)
+		{
+			memset(pOut, 0, iFrameSize * sizeof(float));
+		}
+		else
+		{
+			int avail = 0;
+			int ts = jitter_buffer_get_pointer_timestamp(jitter);
+			jitter_buffer_ctl(jitter, JITTER_BUFFER_GET_AVAILABLE_COUNT, &avail);
+
+			if ((ts == 0))
+			{
+				int want = static_cast<int>(fAverageAvailable);
+				if (avail < want)
+				{
+					++iMissCount;
+					if (iMissCount < 20)
+					{
+						memset(pOut, 0, iFrameSize * sizeof(float));
+						goto nextframe;
+					}
+				}
+			}
+
+			if (qlFrames.empty())
+			{
+				char data[4096];
+				JitterBufferPacket jbp;
+				jbp.data = data;
+				jbp.len = 4096;
+
+				spx_int32_t startofs = 0;
+
+				if (jitter_buffer_get(jitter, &jbp, iFrameSize, &startofs) == JITTER_BUFFER_OK)
+				{
+					iMissCount = 0;
+
+					qlFrames.push_back(std::make_unique<std::vector<uint8_t>>((uint8_t*)jbp.data, (uint8_t*)jbp.data + jbp.len));
+
+					{
+						float a = static_cast<float>(avail);
+						if (avail >= fAverageAvailable)
+							fAverageAvailable = a;
+						else
+							fAverageAvailable *= 0.99f;
+					}
+				}
+				else
+				{
+					// Let the jitter buffer know it's the right time to adjust the buffering delay to the network
+					// conditions.
+					jitter_buffer_update_delay(jitter, &jbp, nullptr);
+
+					iMissCount++;
+					if (iMissCount > 10)
+						nextalive = false;
+				}
+			}
+
+			if (!qlFrames.empty())
+			{
+				auto array = std::move(qlFrames.front());
+				qlFrames.pop_front();
+
+				decodedSamples = opus_decode_float(opus, !array->empty() ? array->data() : nullptr, array->size(), pOut, 48 * 60, 0);
+
+				if (decodedSamples < 0)
+				{
+					decodedSamples = iFrameSize;
+					memset(pOut, 0, iFrameSize * sizeof(float));
+				}
+
+				bool update = true;
+
+				{
+					float& fPowerMax = this->fPowerMax;
+					float& fPowerMin = this->fPowerMin;
+
+					float pow = 0.0f;
+					for (int i = 0; i < decodedSamples; ++i)
+						pow += pOut[i] * pOut[i];
+					pow = sqrtf(pow / static_cast<float>(decodedSamples)); // Average over both L and R channel.
+
+					if (pow >= fPowerMax)
+					{
+						fPowerMax = pow;
+					}
+					else
+					{
+						if (pow <= fPowerMin)
+						{
+							fPowerMin = pow;
+						}
+						else
+						{
+							fPowerMax = 0.99f * fPowerMax;
+							fPowerMin += 0.0001f * pow;
+						}
+					}
+
+					update = (pow < (fPowerMin + 0.01f * (fPowerMax - fPowerMin))); // Update jitter buffer when quiet.
+				}
+
+				quiet = update;
+
+				// qlFrames.isEmpty() will always be true if using opus.
+				// Q_ASSERT(qlFrames.isEmpty());
+				if (qlFrames.empty() && update)
+					jitter_buffer_update_delay(jitter, nullptr, nullptr);
+
+				if (qlFrames.empty()/* && bHasTerminator*/)
+					nextalive = false;
+
+				iInterpCount = 0;
+			}
+			else
+			{
+				// note this will interpolate since it's meant for packet loss - no data does *not* mean no audio
+				if (opus)
+				{
+					decodedSamples = opus_decode_float(opus, nullptr, 0, pOut, iFrameSize, 0);
+					decodedSamples *= channels;
+				}
+
+				if (decodedSamples < 0)
+				{
+					decodedSamples = iFrameSize;
+					memset(pOut, 0, iFrameSize * sizeof(float));
+				}
+
+				// mitigate interpolation (we don't currently have terminators)
+				iInterpCount++;
+				if (iInterpCount > 10)
+				{
+					memset(pOut, 0, decodedSamples * sizeof(float));
+					quiet = true;
+				}
+			}
+
+/*
+			if (!nextalive)
+			{
+				for (unsigned int i = 0; i < static_cast<unsigned int>(iFrameSizePerChannel); ++i)
+				{
+					for (unsigned int s = 0; s < channels; ++s)
+						pOut[i * channels + s] *= fFadeOut[i];
+				}
+			}
+			else if (ts == 0)
+			{
+				for (unsigned int i = 0; i < static_cast<unsigned int>(iFrameSizePerChannel); ++i)
+				{
+					for (unsigned int s = 0; s < channels; ++s)
+						pOut[i * channels + s] *= fFadeIn[i];
+				}
+			}
+*/
+
+			for (int i = decodedSamples / iFrameSize; i > 0; --i)
+			{
+				jitter_buffer_tick(jitter);
+			}
+		}
+	nextframe:
+		// local mute logic
+
+		spx_uint32_t inlen = decodedSamples / channels; // per channel
+		spx_uint32_t outlen = inlen;
+		iBufferFilled += outlen * channels;
+	}
+
+	this->bLastAlive = nextalive;
+
+	consume();
 }
 
 void MumbleAudioOutput::ClientAudioState::PushSound(int16_t* voiceBuffer, int len)
 {
-	auto floatBuffer = (float*)_aligned_malloc(5760 * 1 * sizeof(float), 16);
-	nqr::ConvertToFloat32(floatBuffer, voiceBuffer, 5760, nqr::PCM_16);
+	auto floatBuffer = (float*)_aligned_malloc(len * 1 * sizeof(float), 16);
+	nqr::ConvertToFloat32(floatBuffer, voiceBuffer, len, nqr::PCM_16);
 
 	{
-		lab::AudioBus inBuffer{ 1, 5760, false };
+		lab::AudioBus inBuffer{ 1, size_t(len), false };
 		inBuffer.setSampleRate(48000.f);
-		inBuffer.setChannelMemory(0, floatBuffer, 5760);
+		inBuffer.setChannelMemory(0, floatBuffer, len);
 
 		std::static_pointer_cast<XA2DestinationNode>(context->destination())->Push(&inBuffer);
 		std::static_pointer_cast<XA2DestinationNode>(context->destination())->Poll(len);
@@ -1035,14 +1330,6 @@ void MumbleAudioOutput::ThreadFunc()
 	// initialize COM for the current thread
 	CoInitialize(nullptr);
 
-	HRESULT hr = CoCreateInstance(CLSID_MMDeviceEnumerator, nullptr, CLSCTX_INPROC_SERVER, IID_IMMDeviceEnumerator, (void**)m_mmDeviceEnumerator.GetAddressOf());
-
-	if (FAILED(hr))
-	{
-		trace("%s: failed MMDeviceEnumerator\n", __func__);
-		return;
-	}
-
 	InitializeAudioDevice();
 }
 
@@ -1177,10 +1464,22 @@ void MumbleAudioOutput::InitializeAudioDevice()
 		{
 			std::unique_lock<std::mutex> lock(self->m_initializeMutex);
 			self->m_initializeVar.notify_all();
+			self->m_initializeSignaled = true;
 		}
 
 		MumbleAudioOutput* self;
 	} unlocker(this);
+
+	if (!m_mmDeviceEnumerator)
+	{
+		HRESULT hr = CoCreateInstance(CLSID_MMDeviceEnumerator, nullptr, CLSCTX_INPROC_SERVER, IID_IMMDeviceEnumerator, (void**)m_mmDeviceEnumerator.GetAddressOf());
+
+		if (FAILED(hr))
+		{
+			trace("%s: failed MMDeviceEnumerator (%08x)\n", __func__, hr);
+			return;
+		}
+	}
 
 	while (!device.Get())
 	{

@@ -12,6 +12,17 @@ namespace CitizenFX.Core
 {
     public class EventHandlerDictionary : Dictionary<string, EventHandlerEntry>
     {
+#if IS_FXSERVER
+        // We need this to ensure that server-internal events can't be triggered from the client as unlike 
+        // Lua and JS, C# has never had net event filtering so adding it now would break compatibility.
+        private static HashSet<string> m_serverInternalNetEvents = new HashSet<string>
+        {
+            "playerConnecting",
+            "playerDropped",
+            "playerJoining",
+        };
+#endif
+
         public new EventHandlerEntry this[string key]
         {
             get
@@ -48,6 +59,13 @@ namespace CitizenFX.Core
             
             if (TryGetValue(lookupKey, out entry))
             {
+#if IS_FXSERVER
+                if (m_serverInternalNetEvents.Contains(eventName) && !sourceString.StartsWith("internal-net"))
+                {
+                    return;
+                }
+#endif
+
                 await entry.Invoke(sourceString, arguments);
             }
         }
@@ -157,6 +175,24 @@ namespace CitizenFX.Core
 #endif
 
 					passArgs.Add(ChangeType(sourceString, type));
+				}
+				else if (info.GetCustomAttribute<ParamArrayAttribute>() != null)
+				{
+					// respect parameter arrays
+					var elementType = type.GetElementType();
+					var paramArrayArgs = new List<dynamic>();
+					
+					if (argIdx < args.Length)
+					{
+						for (int pArgIdx = argIdx; pArgIdx < args.Length; pArgIdx++)
+						{
+							paramArrayArgs.Add(ChangeType(args[pArgIdx], elementType));
+						}
+					}
+
+					passArgs.Add(ChangeType(paramArrayArgs.ToArray(), type));
+
+					break;
 				}
 				else
 				{

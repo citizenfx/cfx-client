@@ -879,7 +879,7 @@ namespace fx
 
 			uint8_t syncStyle = (uint8_t)m_instance->GetComponent<fx::ServerGameState>()->GetSyncStyle();
 
-			m_clientRegistry->ForAllClients([&](const fx::ClientSharedPtr& client)
+			m_clientRegistry->ForAllClients([&](fx::ClientSharedPtr client)
 			{
 				auto peer = client->GetPeer();
 
@@ -1051,7 +1051,7 @@ namespace fx
 			->GetComponent<fx::ResourceEventManagerComponent>()
 			->TriggerEvent2(
 				"playerDropped",
-				{ fmt::sprintf("net:%d", client->GetNetId()) },
+				{ fmt::sprintf("internal-net:%d", client->GetNetId()) },
 				realReason
 			);
 
@@ -1563,16 +1563,34 @@ DECLARE_INSTANCE_TYPE(fx::ServerDecorators::HostVoteCount);
 
 DLL_EXPORT void gscomms_execute_callback_on_main_thread(const std::function<void()>& fn, bool force)
 {
+	if (!g_gameServer)
+	{
+		fn();
+		return;
+	}
+
 	g_gameServer->InternalAddMainThreadCb(fn, force);
 }
 
 void gscomms_execute_callback_on_net_thread(const std::function<void()>& fn)
 {
+	if (!g_gameServer)
+	{
+		fn();
+		return;
+	}
+
 	g_gameServer->InternalAddNetThreadCb(fn);
 }
 
 void gscomms_execute_callback_on_sync_thread(const std::function<void()>& fn)
 {
+	if (!g_gameServer)
+	{
+		fn();
+		return;
+	}
+
 	g_gameServer->InternalAddSyncThreadCb(fn);
 }
 

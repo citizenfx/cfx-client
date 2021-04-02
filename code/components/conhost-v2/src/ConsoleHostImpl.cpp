@@ -36,6 +36,9 @@
 
 #include <ShlObj.h>
 
+#include <HostSharedData.h>
+#include <ReverseGameData.h>
+
 static bool g_conHostInitialized = false;
 extern bool g_consoleFlag;
 int g_scrollTop;
@@ -47,6 +50,14 @@ static rage::grcTexture* g_fontTexture;
 
 static void RenderDrawListInternal(ImDrawList* drawList, ImDrawData* refData)
 {
+#ifndef _HAVE_GRCORE_NEWSTATES
+	SetRenderState(0, grcCullModeNone);
+	SetRenderState(2, 0); // alpha blending m8
+
+	GetD3D9Device()->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_POINT);
+	GetD3D9Device()->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_POINT);
+	GetD3D9Device()->SetRenderState(D3DRS_SCISSORTESTENABLE, TRUE);
+#else
 	auto oldRasterizerState = GetRasterizerState();
 	SetRasterizerState(GetStockStateIdentifier(RasterizerStateNoCulling));
 
@@ -55,6 +66,7 @@ static void RenderDrawListInternal(ImDrawList* drawList, ImDrawData* refData)
 
 	auto oldDepthStencilState = GetDepthStencilState();
 	SetDepthStencilState(GetStockStateIdentifier(DepthStencilStateNoDepth));
+#endif
 
 	size_t idxOff = 0;
 
@@ -81,6 +93,11 @@ static void RenderDrawListInternal(ImDrawList* drawList, ImDrawData* refData)
 				{
 					auto& vertex = drawList->VtxBuffer.Data[drawList->IdxBuffer.Data[i + idxOff]];
 					auto color = vertex.col;
+					
+					if (!rage::grcTexture::IsRenderSystemColorSwapped())
+					{
+						color = (color & 0xFF00FF00) | _rotl(color & 0x00FF00FF, 16);
+					}
 
 					rage::grcVertex(vertex.pos.x - refData->DisplayPos.x, vertex.pos.y - refData->DisplayPos.y, 0.0f, 0.0f, 0.0f, -1.0f, color, vertex.uv.x, vertex.uv.y);
 				}
@@ -107,11 +124,17 @@ static void RenderDrawListInternal(ImDrawList* drawList, ImDrawData* refData)
 		}
 	}
 
+#ifdef _HAVE_GRCORE_NEWSTATES
 	SetRasterizerState(oldRasterizerState);
 
 	SetBlendState(oldBlendState);
 
 	SetDepthStencilState(oldDepthStencilState);
+#else
+	GetD3D9Device()->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_ANISOTROPIC);
+	GetD3D9Device()->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_ANISOTROPIC);
+	GetD3D9Device()->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
+#endif
 
 	delete drawList;
 
@@ -173,7 +196,11 @@ static void CreateFontTexture()
 	reference.height = height;
 	reference.depth = 1;
 	reference.stride = width * 4;
+#ifdef GTA_NY
+	reference.format = 1;
+#else
 	reference.format = 11;
+#endif
 	reference.pixelData = (uint8_t*)pixels;
 
 	rage::grcTexture* texture = rage::grcTextureFactory::getInstance()->createImage(&reference, nullptr);
@@ -209,6 +236,31 @@ ImFont* consoleFontSmall;
 
 void DrawMiniConsole();
 
+static void HandleFxDKInput(ImGuiIO& io)
+{
+	static HostSharedData<ReverseGameData> rgd("CfxReverseGameData");
+	static uint16_t lastInputChar = 0;
+	static uint32_t inputCharChangedAt = timeGetTime();
+
+	auto currentInputChar = rgd->inputChar;
+	auto inputCharChanged = currentInputChar != lastInputChar;
+
+	lastInputChar = currentInputChar;
+
+	if (currentInputChar > 0 && currentInputChar < 0x10000)
+	{
+		if (inputCharChanged)
+		{
+			inputCharChangedAt = timeGetTime();
+			io.AddInputCharacterUTF16(currentInputChar);
+		}
+		else if (timeGetTime() - inputCharChangedAt > 300)
+		{
+			io.AddInputCharacterUTF16(currentInputChar);
+		}
+	}
+}
+
 DLL_EXPORT void OnConsoleFrameDraw(int width, int height)
 {
 	if (!g_conHostMutex.try_lock())
@@ -238,6 +290,9 @@ DLL_EXPORT void OnConsoleFrameDraw(int width, int height)
 	}
 
 	ImGuiIO& io = ImGui::GetIO();
+
+	HandleFxDKInput(io);
+
 	io.MouseDrawCursor = g_consoleFlag;
 
 	{
@@ -561,6 +616,7 @@ static HookFunction initFunction([]()
 #ifndef IS_LAUNCHER
 	OnGrcCreateDevice.Connect([=]()
 	{
+#ifdef _HAVE_GRCORE_NEWSTATES
 #ifndef IS_RDR3
 		D3D11_SAMPLER_DESC samplerDesc = CD3D11_SAMPLER_DESC(CD3D11_DEFAULT());
 		samplerDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
@@ -569,6 +625,7 @@ static HookFunction initFunction([]()
 		g_pointSamplerState = CreateSamplerState(&samplerDesc);
 #else
 		g_pointSamplerState = GetStockStateIdentifier(SamplerStatePoint);
+#endif
 #endif
 	});
 
@@ -584,7 +641,7 @@ static HookFunction initFunction([]()
 			virtual inline void KeyDown(UINT vKey, UINT scanCode) override
 			{
 				std::unique_lock<std::mutex> g_conHostMutex;
-
+				
 				ImGuiIO& io = ImGui::GetIO();
 
 				if (vKey < 256)

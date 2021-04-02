@@ -459,8 +459,6 @@ public:
 
 	virtual void End() override
 	{
-		m_ended = true;
-
 		auto stream = m_tcpStream;
 
 		if (stream.GetRef())
@@ -472,6 +470,7 @@ public:
 				thisRef->m_tcpStream = nullptr;
 
 				auto session = thisRef->m_session;
+				thisRef->m_ended = true;
 
 				if (session)
 				{
@@ -479,6 +478,10 @@ public:
 					nghttp2_session_send(*session);
 				}
 			});
+		}
+		else
+		{
+			m_ended = true;
 		}
 	}
 
@@ -556,6 +559,7 @@ namespace h2
 
 		// cache responses independently from streams so 'clean' closes don't invalidate session
 		std::set<fwRefContainer<HttpResponse>> responses;
+		std::shared_mutex responsesMutex;
 	};
 
 	class HttpRequestData : public fwRefCountable
@@ -761,7 +765,11 @@ void Http2ServerImpl::OnConnection(fwRefContainer<TcpServerStream> stream)
 					fwRefContainer<HttpRequest> request = new HttpRequest(2, 0, method, path, headerList, req->connection->stream->GetPeerAddress());
 					
 					fwRefContainer<HttpResponse> response = new Http2Response(request, req->connection->session, frame->hd.stream_id, req->connection->stream);
-					req->connection->responses.insert(response);
+
+					{
+						std::unique_lock _(req->connection->responsesMutex);
+						req->connection->responses.insert(response);
+					}
 
 					req->httpResp = response;
 					reqState->blocked = true;
@@ -795,6 +803,10 @@ void Http2ServerImpl::OnConnection(fwRefContainer<TcpServerStream> stream)
 						{
 							(*handler)(req->body);
 						}
+						else
+						{
+							req->httpReq->SetPendingData(std::move(req->body));
+						}
 					}
 				}
 
@@ -814,6 +826,8 @@ void Http2ServerImpl::OnConnection(fwRefContainer<TcpServerStream> stream)
 		if (resp)
 		{
 			((net::Http2Response*)resp)->Cancel();
+
+			std::unique_lock _(req->connection->responsesMutex);
 			req->connection->responses.erase(resp);
 		}
 
@@ -854,7 +868,14 @@ void Http2ServerImpl::OnConnection(fwRefContainer<TcpServerStream> stream)
 	stream->SetCloseCallback([data]()
 	{
 		{
-			for (auto& response : data->responses)
+			decltype(data->responses) responsesCopy;
+
+			{
+				std::shared_lock _(data->responsesMutex);
+				responsesCopy = data->responses;
+			}
+
+			for (auto& response : responsesCopy)
 			{
 				// cancel HTTP responses that we have referenced
 				// (so that we won't reference data->session)
@@ -866,6 +887,7 @@ void Http2ServerImpl::OnConnection(fwRefContainer<TcpServerStream> stream)
 				}
 			}
 
+			std::unique_lock _(data->responsesMutex);
 			data->responses.clear();
 		}
 

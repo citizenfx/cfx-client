@@ -139,6 +139,19 @@ static InitFunction initFunction([]()
 		return retval;
 	}));
 
+	fx::ScriptEngine::RegisterNativeHandler("NETWORK_GET_FIRST_ENTITY_OWNER", makeEntityFunction([](fx::ScriptContext& context, const fx::sync::SyncEntityPtr& entity)
+    {
+        int retval = -1;
+        auto firstOwner = entity->GetFirstOwner();
+
+        if (!entity->firstOwnerDropped)
+        {
+            retval = firstOwner->GetNetId();
+        }
+
+        return retval;
+    }));
+
 	fx::ScriptEngine::RegisterNativeHandler("GET_ENTITY_COORDS", makeEntityFunction([](fx::ScriptContext& context, const fx::sync::SyncEntityPtr& entity)
 	{
 		float position[3];
@@ -205,26 +218,47 @@ static InitFunction initFunction([]()
 		else
 		{
 			auto en = entity->syncTree->GetEntityOrientation();
+			auto on = entity->syncTree->GetObjectOrientation();
 
-			if (en)
+			if (en || on)
 			{
-#if 0
-				resultVec.x = en->rotX * 180.0 / pi;
-				resultVec.y = en->rotY * 180.0 / pi;
-				resultVec.z = en->rotZ * 180.0 / pi;
-#else
-				float qx, qy, qz, qw;
-				en->quat.Save(qx, qy, qz, qw);
+				bool highRes = false;
+				fx::sync::compressed_quaternion<11> quat;
+				float rotX, rotY, rotZ;
 
-				auto m4 = glm::toMat4(glm::quat{qw, qx, qy, qz});
+				if (en)
+				{
+					quat = en->quat;
+				}
+				else if (on)
+				{
+					highRes = on->highRes;
+					quat = on->quat;
+					rotX = on->rotX;
+					rotY = on->rotY;
+					rotZ = on->rotZ;
+				}
 
-				// common GTA rotation (2) is ZXY
-				glm::extractEulerAngleZXY(m4, resultVec.z, resultVec.x, resultVec.y);
+				if (highRes)
+				{
+					resultVec.x = rotX * 180.0 / pi;
+					resultVec.y = rotY * 180.0 / pi;
+					resultVec.z = rotZ * 180.0 / pi;
+				}
+				else
+				{
+					float qx, qy, qz, qw;
+					quat.Save(qx, qy, qz, qw);
 
-				resultVec.x = glm::degrees(resultVec.x);
-				resultVec.y = glm::degrees(resultVec.y);
-				resultVec.z = glm::degrees(resultVec.z);
-#endif
+					auto m4 = glm::toMat4(glm::quat{ qw, qx, qy, qz });
+
+					// common GTA rotation (2) is ZXY
+					glm::extractEulerAngleZXY(m4, resultVec.z, resultVec.x, resultVec.y);
+
+					resultVec.x = glm::degrees(resultVec.x);
+					resultVec.y = glm::degrees(resultVec.y);
+					resultVec.z = glm::degrees(resultVec.z);
+				}
 			}
 		}
 
@@ -963,6 +997,64 @@ static InitFunction initFunction([]()
 		return gameState->MakeScriptHandle(returnEntity);
 	}));
 
+	fx::ScriptEngine::RegisterNativeHandler("GET_PED_IN_VEHICLE_SEAT", makeEntityFunction([](fx::ScriptContext& context, const fx::sync::SyncEntityPtr& entity)
+    {
+        auto vn = entity->syncTree->GetVehicleGameState();
+
+        int seatArg = context.GetArgument<int>(1) + 2;
+
+        // get the current resource manager
+        auto resourceManager = fx::ResourceManager::GetCurrent();
+
+        // get the owning server instance
+        auto instance = resourceManager->GetComponent<fx::ServerInstanceBaseRef>()->Get();
+
+        // get the server's game state
+        auto gameState = instance->GetComponent<fx::ServerGameState>();
+
+        int retval = 0;
+
+        if (vn && vn->occupants[seatArg]) 
+        {
+            auto pedEntity = gameState->GetEntity(0, vn->occupants[seatArg]);
+            if (pedEntity) 
+            {
+                retval = gameState->MakeScriptHandle(pedEntity);
+            }
+        }
+
+        return retval;
+    }));
+
+	fx::ScriptEngine::RegisterNativeHandler("GET_LAST_PED_IN_VEHICLE_SEAT", makeEntityFunction([](fx::ScriptContext& context, const fx::sync::SyncEntityPtr& entity)
+    {
+        auto vn = entity->syncTree->GetVehicleGameState();
+
+        int seatArg = context.GetArgument<int>(1) + 2;
+
+        // get the current resource manager
+        auto resourceManager = fx::ResourceManager::GetCurrent();
+
+        // get the owning server instance
+        auto instance = resourceManager->GetComponent<fx::ServerInstanceBaseRef>()->Get();
+
+        // get the server's game state
+        auto gameState = instance->GetComponent<fx::ServerGameState>();
+
+        int retval = 0;
+
+        if (vn && vn->lastOccupant[seatArg]) 
+        {
+            auto pedEntity = gameState->GetEntity(0, vn->lastOccupant[seatArg]);
+            if (pedEntity) 
+            {
+                retval = gameState->MakeScriptHandle(pedEntity);
+            }
+        }
+
+        return retval;
+    }));
+
 	fx::ScriptEngine::RegisterNativeHandler("DELETE_ENTITY", makeEntityFunction([](fx::ScriptContext& context, const fx::sync::SyncEntityPtr& entity)
 	{
 		auto resourceManager = fx::ResourceManager::GetCurrent();
@@ -1332,5 +1424,90 @@ static InitFunction initFunction([]()
 		}
 
 		return resultVector;
+	}));
+
+	fx::ScriptEngine::RegisterNativeHandler("IS_ENTITY_VISIBLE", makeEntityFunction([](fx::ScriptContext& context, const fx::sync::SyncEntityPtr& entity)
+	{
+		bool visible = false;
+		entity->syncTree->IsEntityVisible(&visible);
+
+		return visible;
+	}));
+
+	fx::ScriptEngine::RegisterNativeHandler("GET_PED_SOURCE_OF_DAMAGE", makeEntityFunction([](fx::ScriptContext& context, const fx::sync::SyncEntityPtr& entity)
+	{
+		auto node = entity->syncTree->GetPedHealth();
+
+
+		// get the current resource manager
+		auto resourceManager = fx::ResourceManager::GetCurrent();
+
+		// get the owning server instance
+		auto instance = resourceManager->GetComponent<fx::ServerInstanceBaseRef>()->Get();
+
+		// get the server's game state
+		auto gameState = instance->GetComponent<fx::ServerGameState>();
+
+		if (!node || node->sourceOfDamage == 0)
+			return (uint32_t)0;
+
+		auto returnEntity = gameState->GetEntity(0, node->sourceOfDamage);
+
+		if (!returnEntity)
+			return (uint32_t)0;
+
+		// Return the entity
+		return gameState->MakeScriptHandle(returnEntity);
+	}));
+
+	fx::ScriptEngine::RegisterNativeHandler("GET_PED_SOURCE_OF_DEATH", makeEntityFunction([](fx::ScriptContext& context, const fx::sync::SyncEntityPtr& entity)
+	{
+		auto node = entity->syncTree->GetPedHealth();
+
+
+		// get the current resource manager
+		auto resourceManager = fx::ResourceManager::GetCurrent();
+
+		// get the owning server instance
+		auto instance = resourceManager->GetComponent<fx::ServerInstanceBaseRef>()->Get();
+
+		// get the server's game state
+		auto gameState = instance->GetComponent<fx::ServerGameState>();
+
+		if (!node || node->health > 0 || node->sourceOfDamage == 0)
+			return (uint32_t)0;
+
+		auto returnEntity = gameState->GetEntity(0, node->sourceOfDamage);
+
+		if (!returnEntity)
+			return (uint32_t)0;
+
+		// Return the entity
+		return gameState->MakeScriptHandle(returnEntity);
+	}));
+  
+	fx::ScriptEngine::RegisterNativeHandler("SET_PLAYER_CULLING_RADIUS", MakeClientFunction([](fx::ScriptContext& context, const fx::ClientSharedPtr& client)
+	{
+		if (context.GetArgumentCount() > 1)
+		{
+			float radius = context.GetArgument<float>(1);
+
+			if (radius >= 0)
+			{
+				// get the current resource manager
+				auto resourceManager = fx::ResourceManager::GetCurrent();
+
+				// get the owning server instance
+				auto instance = resourceManager->GetComponent<fx::ServerInstanceBaseRef>()->Get();
+
+				// get the server's game state
+				auto gameState = instance->GetComponent<fx::ServerGameState>();
+
+				auto [lock, clientData] = gameState->ExternalGetClientData(client);
+				clientData->playerCullingRadius = radius * radius;
+			}
+		}
+
+		return true;
 	}));
 });

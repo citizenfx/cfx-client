@@ -29,6 +29,12 @@
 
 #include <sstream>
 
+#ifdef _WIN32
+#define SAFE_BUFFERS __declspec(safebuffers)
+#else
+#define SAFE_BUFFERS
+#endif
+
 #ifdef __has_feature
 #define HAS_FEATURE(x) __has_feature(x)
 #else
@@ -124,7 +130,7 @@ result_t TestScriptHost::GetLastErrorText(char** text)
 	return FX_S_OK;
 }
 
-result_t TestScriptHost::InvokeNative(fxNativeContext & context)
+result_t SAFE_BUFFERS TestScriptHost::InvokeNative(fxNativeContext & context)
 {
 #if SCRT_HAS_CALLNATIVEHANDLER
 	// prepare an invocation context
@@ -496,14 +502,19 @@ static InitFunction initFunction([]()
 		{
 			msgpack::unpacked up = msgpack::unpack(topLevelStackBlob, topLevelStackSize);
 
-			auto o = up.get().as<std::vector<msgpack::object>>();
+			const auto& ref = up.get();
 
-			for (auto& e : o)
+			if (ref.type == msgpack::type::ARRAY)
 			{
-				msgpack::sbuffer sb;
-				msgpack::pack(sb, e);
+				auto o = ref.as<std::vector<msgpack::object>>();
 
-				vis->SubmitStackFrame(sb.data(), sb.size());
+				for (auto& e : o)
+				{
+					msgpack::sbuffer sb;
+					msgpack::pack(sb, e);
+
+					vis->SubmitStackFrame(sb.data(), sb.size());
+				}
 			}
 		}
 

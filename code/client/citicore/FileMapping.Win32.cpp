@@ -13,7 +13,6 @@
 #include "Hooking.Aux.h"
 #include <minhook.h>
 
-#ifdef _M_AMD64
 #pragma comment(lib, "ntdll.lib")
 
 #include <shlobj.h>
@@ -27,10 +26,11 @@ typedef wchar_t*(*MappingFunctionType)(const wchar_t*, void*(*)(size_t));
 
 static MappingFunctionType g_mappingFunction;
 
-static NTSTATUS(*g_origLoadDll)(const wchar_t*, uint32_t*, UNICODE_STRING*, HANDLE*);
+static NTSTATUS(NTAPI*g_origLoadDll)(const wchar_t*, uint32_t*, UNICODE_STRING*, HANDLE*);
 
 static bool g_d3dx11;
 
+// this uses SHGetFolderPathW since SC SDK does as well
 static std::wstring GetRoot(int folder)
 {
 	wchar_t pathRef[MAX_PATH];
@@ -44,10 +44,17 @@ static std::wstring GetRoot(int folder)
 
 static std::wstring g_documentsRoot = GetRoot(CSIDL_MYDOCUMENTS);
 static std::wstring g_localAppDataRoot = GetRoot(CSIDL_LOCAL_APPDATA);
+static std::wstring g_programFilesRoot = GetRoot(CSIDL_PROGRAM_FILES);
+static std::wstring g_programFilesX86Root = GetRoot(CSIDL_PROGRAM_FILESX86);
+static std::wstring g_programDataRoot = GetRoot(CSIDL_COMMON_APPDATA);
 
 static std::wstring g_scDocumentsRoot = g_documentsRoot + L"\\Rockstar Games\\Social Club";
 static std::wstring g_launcherDocumentsRoot = g_documentsRoot + L"\\Rockstar Games\\Launcher";
 static std::wstring g_launcherAppDataRoot = g_localAppDataRoot + L"\\Rockstar Games\\Launcher";
+static std::wstring g_launcherProgramDataRoot = g_programDataRoot + L"\\Rockstar Games\\Launcher";
+static std::wstring g_scFilesRoot = g_programFilesRoot + L"\\Rockstar Games\\Social Club";
+static std::wstring g_scX86FilesRoot = g_programFilesX86Root + L"\\Rockstar Games\\Social Club";
+static std::wstring g_launcherFilesRoot = g_programFilesRoot + L"\\Rockstar Games\\Launcher";
 
 static std::wstring MapRedirectedFilename(const wchar_t* origFileName)
 {
@@ -103,12 +110,14 @@ static std::wstring MapRedirectedFilename(const wchar_t* origFileName)
 		return MakeRelativeCitPath(L"cache\\game\\") + &wcsstr(origFileName, L"NVIDIA Corporation\\NV_Cache")[19];
 	}
 
-	if (wcsstr(origFileName, L"Files\\Rockstar Games\\Launcher") != nullptr)
+	// Program Files
+	if (wcsstr(origFileName, L"Files\\Rockstar Games\\Launcher") != nullptr || wcsstr(origFileName, g_launcherFilesRoot.c_str()) != nullptr)
 	{
 		return MakeRelativeCitPath(L"cache\\game\\launcher") + &wcsstr(origFileName, L"Games\\Launcher")[14];
 	}
 
-	if (wcsstr(origFileName, L"Data\\Rockstar Games\\Launcher") != nullptr)
+	// ProgramData
+	if (wcsstr(origFileName, L"Data\\Rockstar Games\\Launcher") != nullptr || wcsstr(origFileName, g_launcherProgramDataRoot.c_str()) != nullptr)
 	{
 		return MakeRelativeCitPath(L"cache\\game\\ros_launcher_data3") + &wcsstr(origFileName, L"Games\\Launcher")[14];
 	}
@@ -142,15 +151,18 @@ static std::wstring MapRedirectedFilename(const wchar_t* origFileName)
 			return MakeRelativeCitPath(L"cache\\game\\dummy.exe.part");
 		}
 
-		if (wcsstr(origFileName, L"Rockstar Games\\GTA5.exe") != nullptr || wcsstr(origFileName, L"Rockstar Games\\RDR2.exe") != nullptr ||
-			wcsstr(origFileName, L"Grand Theft Auto V\\GTA5.exe") != nullptr || wcsstr(origFileName, L"Red Dead Redemption 2\\RDR2.exe") != nullptr)
+		if (wcsstr(origFileName, L"Rockstar Games\\GTA5.exe") != nullptr ||
+			wcsstr(origFileName, L"Grand Theft Auto V\\GTA5.exe") != nullptr)
 		{
 			static thread_local std::wstring s;
-#ifdef GTA_FIVE
 			s = MakeRelativeGamePath(L"GTA5.exe");
-#else
+			origFileName = s.c_str();
+		}
+		else if (wcsstr(origFileName, L"Rockstar Games\\RDR2.exe") != nullptr || 
+				 wcsstr(origFileName, L"Red Dead Redemption 2\\RDR2.exe") != nullptr)
+		{
+			static thread_local std::wstring s;
 			s = MakeRelativeGamePath(L"RDR2.exe");
-#endif
 			origFileName = s.c_str();
 		}
 		else if (wcsstr(origFileName, L"Rockstar Games\\Games") != nullptr)
@@ -203,23 +215,27 @@ static std::wstring MapRedirectedNtFilename(const wchar_t* origFileName)
 
 static bool IsMappedFilename(const std::wstring& fileName)
 {
-	if (fileName.find(L"Files\\Rockstar Games\\Social Club") != std::string::npos)
+	if (fileName.find(L"Files\\Rockstar Games\\Social Club") != std::string::npos ||
+		fileName.find(g_scFilesRoot) != std::string::npos)
 	{
 		return true;
 	}
 
 	// hopefully this'll trap most `Program Files (x86)` directories
-	if (fileName.find(L"Files (x86)\\Rockstar Games\\Social Club") != std::string::npos)
+	if (fileName.find(L"Files (x86)\\Rockstar Games\\Social Club") != std::string::npos ||
+		fileName.find(g_scX86FilesRoot) != std::string::npos)
 	{
 		return true;
 	}
 
-	if (fileName.find(L"Files\\Rockstar Games\\Launcher") != std::string::npos)
+	if (fileName.find(L"Files\\Rockstar Games\\Launcher") != std::string::npos ||
+		fileName.find(g_launcherFilesRoot) != std::string::npos)
 	{
 		return true;
 	}
 
-	if (fileName.find(L"Data\\Rockstar Games\\Launcher") != std::string::npos)
+	if (fileName.find(L"Data\\Rockstar Games\\Launcher") != std::string::npos ||
+		fileName.find(g_launcherProgramDataRoot) != std::string::npos)
 	{
 		return true;
 	}
@@ -323,18 +339,18 @@ static bool IsMappedFilename(const std::wstring& fileName)
 	return false;
 }
 
-static HANDLE(*g_origCreateFileW)(_In_ LPCWSTR lpFileName, _In_ DWORD dwDesiredAccess, _In_ DWORD dwShareMode, _In_opt_ LPSECURITY_ATTRIBUTES lpSecurityAttributes, _In_ DWORD dwCreationDisposition, _In_ DWORD dwFlagsAndAttributes, _In_opt_ HANDLE hTemplateFile);
+static HANDLE(WINAPI* g_origCreateFileW)(_In_ LPCWSTR lpFileName, _In_ DWORD dwDesiredAccess, _In_ DWORD dwShareMode, _In_opt_ LPSECURITY_ATTRIBUTES lpSecurityAttributes, _In_ DWORD dwCreationDisposition, _In_ DWORD dwFlagsAndAttributes, _In_opt_ HANDLE hTemplateFile);
 
-static HANDLE CreateFileWStub(_In_ LPCWSTR lpFileName, _In_ DWORD dwDesiredAccess, _In_ DWORD dwShareMode, _In_opt_ LPSECURITY_ATTRIBUTES lpSecurityAttributes, _In_ DWORD dwCreationDisposition, _In_ DWORD dwFlagsAndAttributes, _In_opt_ HANDLE hTemplateFile)
+static HANDLE WINAPI CreateFileWStub(_In_ LPCWSTR lpFileName, _In_ DWORD dwDesiredAccess, _In_ DWORD dwShareMode, _In_opt_ LPSECURITY_ATTRIBUTES lpSecurityAttributes, _In_ DWORD dwCreationDisposition, _In_ DWORD dwFlagsAndAttributes, _In_opt_ HANDLE hTemplateFile)
 {
 	std::wstring fileName = MapRedirectedFilename(lpFileName);
 
 	return g_origCreateFileW(fileName.c_str(), dwDesiredAccess, dwShareMode, lpSecurityAttributes, dwCreationDisposition, dwFlagsAndAttributes, hTemplateFile);
 }
 
-static BOOL(*g_origGetFileAttributesExW)(_In_ LPCWSTR lpFileName, _In_ GET_FILEEX_INFO_LEVELS fInfoLevelId, _Out_writes_bytes_(sizeof(WIN32_FILE_ATTRIBUTE_DATA)) LPVOID lpFileInformation);
+static BOOL(WINAPI* g_origGetFileAttributesExW)(_In_ LPCWSTR lpFileName, _In_ GET_FILEEX_INFO_LEVELS fInfoLevelId, _Out_writes_bytes_(sizeof(WIN32_FILE_ATTRIBUTE_DATA)) LPVOID lpFileInformation);
 
-static BOOL GetFileAttributesExWStub(_In_ LPCWSTR lpFileName, _In_ GET_FILEEX_INFO_LEVELS fInfoLevelId, _Out_writes_bytes_(sizeof(WIN32_FILE_ATTRIBUTE_DATA)) LPVOID lpFileInformation)
+static BOOL WINAPI GetFileAttributesExWStub(_In_ LPCWSTR lpFileName, _In_ GET_FILEEX_INFO_LEVELS fInfoLevelId, _Out_writes_bytes_(sizeof(WIN32_FILE_ATTRIBUTE_DATA)) LPVOID lpFileInformation)
 {
 	std::wstring fileName = MapRedirectedFilename(lpFileName);
 
@@ -626,7 +642,7 @@ static HRESULT WINAPI QueryDListForApplication1Stub(BOOL* pDefaultToDiscrete, HA
 static FARPROC(WINAPI* g_origGetProcAddress)(HMODULE hModule, LPCSTR procName, void* caller);
 
 NTSTATUS NTAPI NtCloseHook(IN HANDLE Handle);
-NTSTATUS NtQueryInformationProcessHook(IN HANDLE ProcessHandle, IN PROCESSINFOCLASS ProcessInformationClass, OUT PVOID ProcessInformation, IN ULONG ProcessInformationLength, OUT PULONG ReturnLength OPTIONAL);
+NTSTATUS NTAPI NtQueryInformationProcessHook(IN HANDLE ProcessHandle, IN PROCESSINFOCLASS ProcessInformationClass, OUT PVOID ProcessInformation, IN ULONG ProcessInformationLength, OUT PULONG ReturnLength OPTIONAL);
 
 extern "C" NTSTATUS NTAPI NtQueryVirtualMemory(
 	HANDLE                   ProcessHandle,
@@ -637,7 +653,7 @@ extern "C" NTSTATUS NTAPI NtQueryVirtualMemory(
 	PSIZE_T                  ReturnLength
 );
 
-NTSTATUS NtQueryVirtualMemoryHook(
+NTSTATUS NTAPI NtQueryVirtualMemoryHook(
 	HANDLE                   ProcessHandle,
 	PVOID                    BaseAddress,
 	INT MemoryInformationClass,
@@ -651,15 +667,16 @@ NTSTATUS NtQueryVirtualMemoryHook(
 
 #include <Hooking.h>
 
+static const DWORD bigOne = 1;
+static auto ntdllRef = GetModuleHandleW(L"ntdll.dll");
+
 FARPROC WINAPI GetProcAddressStub(HMODULE hModule, LPCSTR lpProcName, void* caller)
 {
-	static const DWORD bigOne = 1;
-	static auto ntdllRef = GetModuleHandleW(L"ntdll.dll");
-
 	if (!IS_INTRESOURCE(lpProcName))
 	{
 		if (true)
 		{
+#ifdef _M_AMD64
 			if (hModule == ntdllRef && _stricmp(lpProcName, "NtQueryInformationProcess") == 0)
 			{
 				char* ntdll = (char*)ntdllRef;
@@ -704,6 +721,12 @@ FARPROC WINAPI GetProcAddressStub(HMODULE hModule, LPCSTR lpProcName, void* call
 				//return (FARPROC)NtQueryInformationProcessHook;
 				//return (FARPROC)NtQueryInformationProcess;
 			}
+#else
+			if (hModule == ntdllRef && _stricmp(lpProcName, "NtQueryInformationProcess") == 0)
+			{
+				return (FARPROC)NtQueryInformationProcessHook;
+			}
+#endif
 
 			if (hModule == ntdllRef && _stricmp(lpProcName, "NtQueryVirtualMemory") == 0)
 			{
@@ -830,6 +853,20 @@ VOID CALLBACK LdrDllNotification(
 	}
 }
 
+static decltype(&::CreateThread) g_origCreateThread;
+static decltype(&::CreateThread) g_origCreateThread32;
+
+template<decltype(&g_origCreateThread) Orig>
+static HANDLE WINAPI CreateThreadStub( _In_opt_ LPSECURITY_ATTRIBUTES lpThreadAttributes, _In_ SIZE_T dwStackSize, _In_ LPTHREAD_START_ROUTINE lpStartAddress, _In_opt_ __drv_aliasesMem LPVOID lpParameter, _In_ DWORD dwCreationFlags, _Out_opt_ LPDWORD lpThreadId )
+{
+	if (dwStackSize > 0 && dwStackSize < (1 * 1024 * 1024))
+	{
+		dwStackSize = 0;
+	}
+
+	return (*Orig)(lpThreadAttributes, dwStackSize, lpStartAddress, lpParameter, dwCreationFlags, lpThreadId);
+}
+
 extern "C" DLL_EXPORT void CoreSetMappingFunction(MappingFunctionType function)
 {
 	DisableToolHelpScope scope;
@@ -859,41 +896,11 @@ extern "C" DLL_EXPORT void CoreSetMappingFunction(MappingFunctionType function)
 	MH_CreateHookApi(L"kernelbase.dll", "RegOpenKeyExW", RegOpenKeyExWStub, (void**)&g_origRegOpenKeyExW);
 	MH_CreateHookApi(L"kernelbase.dll", "GetFileAttributesExW", GetFileAttributesExWStub, (void**)&g_origGetFileAttributesExW);
 	MH_CreateHookApi(L"kernelbase.dll", "GetProcAddressForCaller", GetProcAddressStub, (void**)&g_origGetProcAddress);
+	MH_CreateHookApi(L"kernel32.dll", "CreateThread", CreateThreadStub<&g_origCreateThread32>, (void**)&g_origCreateThread32);
+	MH_CreateHookApi(L"kernelbase.dll", "CreateThread", CreateThreadStub<&g_origCreateThread>, (void**)&g_origCreateThread);
 	MH_EnableHook(MH_ALL_HOOKS);
 
 	static auto _LdrRegisterDllNotification = (decltype(&LdrRegisterDllNotification))GetProcAddress(GetModuleHandle(L"ntdll.dll"), "LdrRegisterDllNotification");
 	_LdrRegisterDllNotification(0, LdrDllNotification, nullptr, &g_lastDllNotif);
 }
-
-#include <Hooking.Patterns.h>
-
-static std::multimap<uint64_t, uintptr_t> g_hints;
-
-extern "C" CORE_EXPORT auto CoreGetPatternHints()
-{
-	return &g_hints;
-}
-
-static InitFunction initFunction([]()
-{
-	std::wstring hintsFile = MakeRelativeCitPath(L"citizen\\hints.dat");
-	FILE* hints = _wfopen(hintsFile.c_str(), L"rb");
-
-	if (hints)
-	{
-		while (!feof(hints))
-		{
-			uint64_t hash;
-			uintptr_t hint;
-
-			fread(&hash, 1, sizeof(hash), hints);
-			fread(&hint, 1, sizeof(hint), hints);
-
-			hook::pattern::hint(hash, hint);
-		}
-
-		fclose(hints);
-	}
-});
-#endif
 #endif

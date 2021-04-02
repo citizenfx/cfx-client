@@ -32,6 +32,9 @@ namespace WRL = Microsoft::WRL;
 class MumbleClient;
 class MumbleUser;
 
+struct JitterBuffer_;
+typedef struct JitterBuffer_ JitterBuffer;
+
 class MumbleAudioOutput
 {
 public:
@@ -75,11 +78,11 @@ public:
 	friend struct XA2DestinationNode;
 
 private:
-	struct ClientAudioStateBase
+	struct ClientAudioStateBase : public std::enable_shared_from_this<ClientAudioStateBase>
 	{
 		ClientAudioStateBase();
 
-		virtual ~ClientAudioStateBase() = default;
+		virtual ~ClientAudioStateBase();
 
 		virtual bool Valid()
 		{
@@ -99,7 +102,21 @@ private:
 			return isTalking;
 		}
 
-		uint64_t sequence;
+		virtual bool ShouldManagePoll()
+		{
+			return false;
+		}
+
+		virtual void PollAudio(int frameCount);
+
+		virtual void AfterConstruct()
+		{
+		
+		}
+
+		void resizeBuffer(size_t size);
+
+		uint64_t sequence = 0;
 		float volume;
 		float position[3];
 		float distance;
@@ -107,7 +124,27 @@ private:
 		bool isTalking;
 		bool isAudible;
 		OpusDecoder* opus;
+		JitterBuffer* jitter;
 		uint32_t lastTime;
+
+		std::mutex jitterLock;
+
+		int iLastConsume = 0;
+		int iBufferFilled = 0;
+		int iBufferOffset = 0;
+		float* pfBuffer = nullptr;
+		int iBufferSize = 48000;
+		bool bLastAlive = false;
+
+		bool quiet = true;
+		float fPowerMax = 0.0f;
+		float fPowerMin = 0.0f;
+
+		float fAverageAvailable = 0.0f;
+		int iMissCount = 0;
+		int iInterpCount = 0;
+
+		std::list<std::unique_ptr<std::vector<uint8_t>>> qlFrames;
 	};
 
 	struct ExternalAudioState : public ClientAudioStateBase
@@ -123,6 +160,8 @@ private:
 		virtual void PushPosition(MumbleAudioOutput* baseIo, float position[3]) override;
 
 		virtual bool IsTalking() override;
+
+		virtual void AfterConstruct() override;
 
 		fwRefContainer<IMumbleAudioSink> sink;
 
@@ -144,6 +183,11 @@ private:
 		virtual bool Valid() override
 		{
 			return context && context->destination();
+		}
+
+		virtual bool ShouldManagePoll()
+		{
+			return true;
 		}
 
 		virtual void PushSound(int16_t* voiceBuffer, int len) override;
@@ -173,6 +217,7 @@ private:
 	std::thread m_thread;
 
 	bool m_initialized;
+	bool m_initializeSignaled = false;
 
 	std::mutex m_initializeMutex;
 

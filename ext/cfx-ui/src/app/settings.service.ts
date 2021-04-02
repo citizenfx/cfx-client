@@ -50,7 +50,7 @@ export class SettingsService {
 			category: '#SettingsCat_Connection',
 		});
 
-		if (this.gameService.gameName !== 'rdr3') {
+		if (this.gameService.gameName !== 'rdr3' && this.gameService.gameName !== 'ny') {
 			this.addSetting('darkTheme', {
 				name: '#Settings_DarkTheme',
 				description: '#Settings_DarkThemeDesc',
@@ -103,7 +103,7 @@ export class SettingsService {
 			category: '#SettingsCat_Interface',
 		});
 
-		if (this.gameService.gameName !== 'rdr3') {
+		if (this.gameService.gameName !== 'rdr3' && this.gameService.gameName !== 'ny') {
 			this.addSetting('menuAudio', {
 				name: '#Settings_MenuAudio',
 				description: '#Settings_MenuAudioDesc',
@@ -113,12 +113,39 @@ export class SettingsService {
 				category: '#SettingsCat_Interface',
 			});
 
+			this.addSetting('inProcessGpu', {
+				name: '#Settings_InProcessGpu',
+				description: '#Settings_InProcessGpuDesc',
+				type: 'checkbox',
+				getCb: () => this.gameService.getConvar('nui_useInProcessGpu').pipe(map(a => a === 'true' ? 'true' : 'false')),
+				setCb: (value) => this.gameService.setConvar('nui_useInProcessGpu', value),
+				category: '#SettingsCat_Game',
+			});
+
 			this.addSetting('streamingProgress', {
 				name: '#Settings_GameStreamProgress',
 				description: '#Settings_GameStreamProgressDesc',
 				type: 'checkbox',
 				getCb: () => this.gameService.getConvar('game_showStreamingProgress').pipe(map(a => a === 'true' ? 'true' : 'false')),
 				setCb: (value) => this.gameService.setConvar('game_showStreamingProgress', value),
+				category: '#SettingsCat_Game',
+			});
+
+			this.addSetting('useAudioFrameLimiter', {
+				name: '#Settings_UseAudioFrameLimiter',
+				description: '#Settings_UseAudioFrameLimiterDesc',
+				type: 'checkbox',
+				getCb: () => this.gameService.getConvar('game_useAudioFrameLimiter').pipe(map(a => a === 'true' ? 'true' : 'false')),
+				setCb: (value) => this.gameService.setConvar('game_useAudioFrameLimiter', value),
+				category: '#SettingsCat_Game',
+			});
+
+			this.addSetting('enableHandbrakeCamera', {
+				name: '#Settings_HandbrakeCamera',
+				description: '#Settings_HandbrakeCameraDesc',
+				type: 'checkbox',
+				getCb: () => this.gameService.getConvar('cam_enableHandbrakeCamera').pipe(map(a => a === 'true' ? 'true' : 'false')),
+				setCb: (value) => this.gameService.setConvar('cam_enableHandbrakeCamera', value),
 				category: '#SettingsCat_Game',
 			});
 
@@ -145,23 +172,6 @@ export class SettingsService {
 			});
 		}
 
-		this.addSetting('queriesPerMinute', {
-			name: '#Settings_QueriesPerMinute',
-			type: 'switch',
-			getCb: () => this.gameService.getConvar('ui_maxQueriesPerMinute'),
-			setCb: (value) => this.gameService.setConvar('ui_maxQueriesPerMinute', value),
-			options: {
-				'10000': '10000',
-				'5000': '5000',
-				'3000': '3000',
-				'1500': '1500',
-				'1000': '1000',
-				'500': '500',
-				'250': '250',
-			},
-			category: '#SettingsCat_Connection',
-		});
-
 		this.addSetting('connectedProfiles', {
 			name: '#Settings_ConnectedProfiles',
 			type: 'html',
@@ -170,7 +180,7 @@ export class SettingsService {
 			category: '#SettingsCat_Account',
 		});
 
-		if (this.gameService.gameName !== 'rdr3') {
+		if (this.gameService.gameName !== 'rdr3' && this.gameService.gameName !== 'ny') {
 			this.addSetting('accountButton', {
 				name: '#Settings_Account',
 				type: 'button',
@@ -237,20 +247,20 @@ export class SettingsService {
 				colorizeValue: true,
 				category: '#SettingsCat_Account',
 			});
-
-			this.addSetting('updateChannel', {
-				name: '#Settings_UpdateChannel',
-				description: '#Settings_UpdateChannelDesc',
-				type: 'switch',
-				getCb: () => this.gameService.getConvar('ui_updateChannel'),
-				setCb: (value) => this.gameService.setConvar('ui_updateChannel', value),
-				options: {
-					'production': 'Release',
-					'canary': 'Canary (Experimental/Unstable)',
-				},
-				category: '#SettingsCat_Game',
-			});
 		}
+
+		this.addSetting('updateChannel', {
+			name: '#Settings_UpdateChannel',
+			description: '#Settings_UpdateChannelDesc',
+			type: 'switch',
+			getCb: () => this.gameService.getConvar('ui_updateChannel'),
+			setCb: (value) => this.gameService.setConvar('ui_updateChannel', value),
+			options: {
+				'production': 'Release',
+				'canary': 'Canary (Experimental/Unstable)',
+			},
+			category: '#SettingsCat_Game',
+		});
 	}
 
 	public addSetting(label: string, setting: Setting) {

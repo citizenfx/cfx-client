@@ -336,20 +336,14 @@ void NetLibrary::ProcessOOB(const NetAddress& from, const char* oob, size_t leng
 
 				StripColors(hostname, cleaned, 8192);
 
-#ifdef GTA_FIVE
-				SetWindowText(FindWindow(
-#ifdef GTA_FIVE
-					L"grcWindow"
-#elif defined(IS_RDR3)
-					L"sgaWindow"
-#else
-					L"UNKNOWN_WINDOW"
-#endif
-				, nullptr), va(
+#if defined(GTA_FIVE) || defined(GTA_NY)
+				SetWindowText(FindWindow(xbr::GetGameWndClass(), nullptr), va(
 #ifdef GTA_FIVE
 					L"FiveM"
 #elif defined(IS_RDR3)
 					L"RedM"
+#elif defined(GTA_NY)
+					L"LibertyM"
 #endif
 					L" - %s", ToWide(cleaned)));
 #endif
@@ -845,6 +839,9 @@ concurrency::task<void> NetLibrary::ConnectToServer(const std::string& rootUrl)
 {
 	std::string ruRef = rootUrl;
 
+	// increment the GUID so servers won't race to remove us
+	m_tempGuid++;
+
 	auto urlRef = co_await ResolveUrl(ruRef);
 
 	if (!urlRef)
@@ -921,6 +918,8 @@ concurrency::task<void> NetLibrary::ConnectToServer(const std::string& rootUrl)
 	postMap["gameName"] = "rdr3";
 #elif defined(GTA_FIVE)
 	postMap["gameName"] = "gta5";
+#elif defined(GTA_NY)
+	postMap["gameName"] = "gta4";
 #endif
 
 	static std::function<void()> performRequest;
@@ -1681,10 +1680,11 @@ concurrency::task<void> NetLibrary::ConnectToServer(const std::string& rootUrl)
 					if (info.is_object() && info["vars"].is_object())
 					{
 						auto val = info["vars"].value("sv_enforceGameBuild", "");
+						int buildRef = 0;
 
 						if (!val.empty())
 						{
-							int buildRef = std::stoi(val);
+							buildRef = std::stoi(val);
 
 							if (buildRef != 0 && buildRef != xbr::GetGameBuild())
 							{
@@ -1704,6 +1704,15 @@ concurrency::task<void> NetLibrary::ConnectToServer(const std::string& rootUrl)
 								return;
 							}
 						}
+
+#if defined(GTA_FIVE)
+						if (xbr::GetGameBuild() != 1604 && buildRef == 0)
+						{
+							OnRequestBuildSwitch(1604);
+							m_connectionState = CS_IDLE;
+							return;
+						}
+#endif
 
 						auto ival = info["vars"].value("sv_licenseKeyToken", "");
 
@@ -2007,6 +2016,16 @@ int32_t NetLibrary::GetPing()
 	if (m_impl)
 	{
 		return m_impl->GetPing();
+	}
+
+	return -1;
+}
+
+int32_t NetLibrary::GetVariance()
+{
+	if (m_impl)
+	{
+		return m_impl->GetVariance();
 	}
 
 	return -1;

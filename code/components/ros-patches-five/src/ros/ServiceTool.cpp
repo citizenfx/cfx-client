@@ -54,7 +54,7 @@ BOOL SetServiceStatusHook(
 
 	if (lpServiceStatus->dwCurrentState == SERVICE_RUNNING)
 	{
-		auto hEvent = CreateEventW(NULL, TRUE, FALSE, L"Cfx_ROSServiceEvent");
+		auto hEvent = CreateEventW(NULL, TRUE, FALSE, va(L"Cfx_ROSServiceEvent_%s", ToWide(launch::GetLaunchModeKey())));
 		SetEvent(hEvent);
 	}
 
@@ -133,7 +133,7 @@ HANDLE CreateFileMappingAHook(_In_ HANDLE hFile, _In_opt_ LPSECURITY_ATTRIBUTES 
 	return CreateFileMappingA(hFile, lpFileMappingAttributes, flProtect, dwMaximumSizeHigh, dwMaximumSizeLow, lpName);
 }
 
-extern HINSTANCE ShellExecuteWStub(_In_opt_ HWND hwnd, _In_opt_ LPCWSTR lpOperation, _In_ LPCWSTR lpFile, _In_opt_ LPCWSTR lpParameters, _In_opt_ LPCWSTR lpDirectory, _In_ INT nShowCmd);
+extern HINSTANCE __stdcall ShellExecuteWStub(_In_opt_ HWND hwnd, _In_opt_ LPCWSTR lpOperation, _In_ LPCWSTR lpFile, _In_opt_ LPCWSTR lpParameters, _In_opt_ LPCWSTR lpDirectory, _In_ INT nShowCmd);
 
 static void Service_Run(const boost::program_options::variables_map& map)
 {
@@ -157,6 +157,8 @@ static void Service_Run(const boost::program_options::variables_map& map)
 		hook::iat("advapi32.dll", QueryServiceConfigWHook, "QueryServiceConfigW");
 		hook::iat("shell32.dll", ShellExecuteWStub, "ShellExecuteW");
 	});
+
+	auto mutex = CreateMutexW(NULL, TRUE, va(L"Cfx_ROSServiceMutex_%s", ToWide(launch::GetLaunchModeKey())));
 
 	g_origProcess = programPath.wstring();
 	ToolMode_LaunchGame(programPath.wstring().c_str());

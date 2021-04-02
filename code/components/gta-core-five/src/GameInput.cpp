@@ -630,16 +630,16 @@ void BindingManager::Initialize()
 
 std::shared_ptr<Binding> BindingManager::Bind(int ioSource, int ioParameter, const std::string& commandString)
 {
-	for (auto& binding : m_bindings)
+	for (auto it = m_bindings.begin(); it != m_bindings.end(); )
 	{
-		if (binding.second->GetCommand() == commandString && IsTagActive(binding.second->GetTag()))
+		if (it->second->GetCommand() == commandString && IsTagActive(it->second->GetTag()))
 		{
-			m_bindings.erase(binding.first);
-			break;
+			it = m_bindings.erase(it);
+			continue;
 		}
-	}
 
-	//m_bindings.erase({ ioSource, ioParameter });
+		it++;
+	}
 
 	auto binding = std::make_shared<Binding>(commandString);
 	binding->SetBinding({ ioSource, ioParameter });
@@ -1205,6 +1205,16 @@ static HookFunction hookFunction([]()
 		auto location = hook::get_pattern("48 C1 FA 02 48 8B C2 48 C1 E8 3F 48 03 D0 E8", 14);
 		hook::set_call(&g_origMapFunc, location);
 		hook::call(location, MapFuncHook);
+	}
+
+	// GetControlInstructionalButton
+	{
+		// limit check
+		auto location = hook::get_pattern<char>("81 FA ? ? 00 00 77 4F 48", -6);
+		hook::nop(location + 12, 2);
+
+		// return array index (force to 0)
+		hook::put<uint32_t>(location + 0x24, 0x90DB3148);
 	}
 
 	// control

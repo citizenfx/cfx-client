@@ -243,23 +243,23 @@ static void add_crashometry(json& data)
 	}
 }
 
-struct ErrorData
+struct GameErrorData
 {
 	std::string errorName;
 	std::string errorDescription;
 
-	ErrorData()
+	GameErrorData()
 	{
 	}
 
-	ErrorData(const std::string& errorName, const std::string& errorDescription)
+	GameErrorData(const std::string& errorName, const std::string& errorDescription)
 		: errorName(errorName), errorDescription(errorDescription)
 	{
 
 	}
 };
 
-static ErrorData LookupError(uint32_t hash)
+static GameErrorData LookupError(uint32_t hash)
 {
 	FILE* f = _wfopen(MakeRelativeGamePath(L"update/x64/data/errorcodes/american.txt").c_str(), L"r");
 
@@ -278,16 +278,16 @@ static ErrorData LookupError(uint32_t hash)
 					char data[8192] = { 0 };
 					fgets(data, 8191, f);
 
-					return ErrorData{&line[1], data};
+					return GameErrorData{ &line[1], data };
 				}
 			}
 		}
 	}
 
-	return ErrorData{};
+	return GameErrorData{};
 }
 
-static std::optional<std::tuple<ErrorData, uint64_t>> LoadErrorData()
+static std::optional<std::tuple<GameErrorData, uint64_t>> LoadErrorData()
 {
 	FILE* f = _wfopen(MakeRelativeCitPath(L"cache\\error_out").c_str(), L"rb");
 
@@ -328,7 +328,7 @@ static void OverloadCrashData(TASKDIALOGCONFIG* config)
 		{
 			_wunlink(MakeRelativeCitPath(L"cache\\error_out").c_str());
 
-			static ErrorData errData = std::get<ErrorData>(*data);
+			static GameErrorData errData = std::get<GameErrorData>(*data);
 			static uint64_t retAddr = std::get<uint64_t>(*data);
 
 			if (errData.errorName.empty())
@@ -423,8 +423,8 @@ static std::wstring GetAdditionalData()
 		{
 			json jsonData = json::object({
 				{ "type", "rage_error" },
-				{ "key", std::get<ErrorData>(*errorData).errorName },
-				{ "description", std::get<ErrorData>(*errorData).errorDescription },
+				{ "key", std::get<GameErrorData>(*errorData).errorName },
+				{ "description", std::get<GameErrorData>(*errorData).errorDescription },
 				{ "retAddr", std::get<uint64_t>(*errorData) },
 			});
 
@@ -533,7 +533,7 @@ static void AllocateExceptionBuffer()
 	}
 }
 
-extern "C" DLL_EXPORT DWORD RemoteExceptionFunc(LPVOID objectPtr)
+extern "C" DLL_EXPORT DWORD WINAPI RemoteExceptionFunc(LPVOID objectPtr)
 {
 	__try
 	{
@@ -555,7 +555,7 @@ extern "C" DLL_EXPORT DWORD RemoteExceptionFunc(LPVOID objectPtr)
 	}
 }
 
-extern "C" DLL_EXPORT DWORD BeforeTerminateHandler(LPVOID arg)
+extern "C" DLL_EXPORT DWORD WINAPI BeforeTerminateHandler(LPVOID arg)
 {
 	__try
 	{
@@ -1496,7 +1496,8 @@ void InitializeDumpServer(int inheritedHandle, int parentPid)
 
 		auto thread = std::thread([=]()
 		{
-			if (shouldTerminate)
+			// Should not show taskdialog when in fxdk mode
+			if (shouldTerminate && !launch::IsSDKGuest())
 			{
 				TaskDialogIndirect(&taskDialogConfig, nullptr, nullptr, nullptr);
 			}
@@ -1630,7 +1631,9 @@ static ExceptionHandler* g_exceptionHandler;
 
 extern "C" IMAGE_DOS_HEADER __ImageBase;
 extern "C" BOOL WINAPI _CRT_INIT(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpReserved);
+#ifdef _M_AMD64
 extern "C" void WINAPI __security_init_cookie();
+#endif
 
 static bool initialized = false;
 
@@ -1641,9 +1644,21 @@ extern "C" DLL_EXPORT void EarlyInitializeExceptionHandler()
 		return;
 	}
 
+#ifdef _M_AMD64
 	__security_init_cookie();
+#endif
 	_CRT_INIT((HINSTANCE)&__ImageBase, DLL_PROCESS_ATTACH, nullptr);
 	_CRT_INIT((HINSTANCE)&__ImageBase, DLL_THREAD_ATTACH, nullptr);
+}
+
+extern "C" DLL_EXPORT bool TerminateForException(PEXCEPTION_POINTERS exception)
+{
+	if (g_exceptionHandler)
+	{
+		return g_exceptionHandler->WriteMinidumpForException(exception);
+	}
+
+	return false;
 }
 
 extern "C" DLL_EXPORT bool InitializeExceptionHandler()
@@ -1773,7 +1788,6 @@ extern "C" DLL_EXPORT bool InitializeExceptionHandler()
 	g_exceptionHandler->set_handle_debug_exceptions(true);
 
 	// disable Windows' SetUnhandledExceptionFilter
-#ifdef _M_AMD64
 	DWORD oldProtect;
 
 	LPVOID unhandledFilters[] = { 
@@ -1787,10 +1801,13 @@ extern "C" DLL_EXPORT bool InitializeExceptionHandler()
 		{
 			VirtualProtect(unhandledFilter, 4, PAGE_EXECUTE_READWRITE, &oldProtect);
 
+#ifdef _M_AMD64
 			*(uint8_t*)unhandledFilter = 0xC3;
+#else
+			*(uint32_t*)unhandledFilter = 0x900004C2;
+#endif
 		}
 	}
-#endif
 
 	return false;
 }

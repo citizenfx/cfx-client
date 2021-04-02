@@ -1,4 +1,5 @@
 local USE_SPLIT_LUA, USE_DOC_LUA = ...
+local USE_SPLIT_LUA_DIRECT = USE_SPLIT_LUA and gApiSet ~= 'server'
 
 if USE_SPLIT_LUA or USE_DOC_LUA then
 	if not os.getenv('NATIVES_DIR') or #os.getenv('NATIVES_DIR') < 2 then
@@ -109,7 +110,7 @@ local function printArgument(argument, native)
 		return '_mfr(' .. printArgumentName(argument.name) .. ')'
 	elseif argument.type.name == 'Hash' then
 		return '_ch(' .. printArgumentName(argument.name) .. ')'
-	elseif argument.type.name == 'charPtr' then
+	elseif argument.type.nativeType == 'string' then
 		return '_ts(' .. printArgumentName(argument.name) .. ')'
 	end
 
@@ -154,7 +155,7 @@ end
 
 local function printInvocationArguments(native)
 	local args = {
-		native.hash
+		USE_SPLIT_LUA_DIRECT and 'fn' or native.hash
 	}
 
 	if native.arguments then
@@ -164,10 +165,10 @@ local function printInvocationArguments(native)
 	end
 
 	if native.returns then
-		table.insert(args, '_r')
-
 		if native.returns.nativeType ~= 'bool' then
 			table.insert(args, printReturnType(native.returns))
+		else
+			table.insert(args, '_r')
 		end
 	end
 
@@ -280,7 +281,13 @@ local function printNative(native)
 	local str = ""
 
 	local function printThis(name)
-		local str = string.format("%sfunction %s%s(%s)\n", formatDocString(native), USE_DOC_LUA and '' or 'Global.', name, printArgumentList(native))
+		local prefix = ""
+		
+		if USE_SPLIT_LUA_DIRECT then
+			prefix = string.format("local fn = _gn(%s)\n", native.hash)
+		end
+	
+		local str = string.format("%s%sfunction %s%s(%s)\n", prefix, formatDocString(native), USE_DOC_LUA and '' or 'Global.', name, printArgumentList(native))
 
 		if not USE_DOC_LUA then
 			local preCall = ''
@@ -291,7 +298,7 @@ local function printNative(native)
 				postCall = ')'
 			end
 		
-			str = str .. string.format("\treturn %s_in(%s)%s\n", preCall, printInvocationArguments(native), postCall)
+			str = str .. string.format("\treturn %s_in%s(%s)%s\n", preCall, USE_SPLIT_LUA_DIRECT and '2' or '', printInvocationArguments(native), postCall)
 		end
 	
 		str = str .. "end\n"

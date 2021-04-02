@@ -4,12 +4,14 @@
 	"dependencies": [
 		"fx[2]",
 		"citizen:resources:core",
+		"citizen:resources:client",
 		"citizen:scripting:core",
 		"citizen:resources:metadata:lua",
 		"citizen:scripting:v8",
 		"net:tcp-server",
 		"vendor:bgfx",
-		"citizen:game:ipc"
+		"citizen:game:ipc",
+		"ros-patches:five"
 	],
 	"provides": []
 }

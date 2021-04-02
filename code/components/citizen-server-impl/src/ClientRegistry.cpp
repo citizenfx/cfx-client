@@ -33,7 +33,11 @@ namespace fx
 		fx::ClientSharedPtr client = fx::ClientSharedPtr::Construct(guid);
 		fx::ClientWeakPtr weakClient(client);
 
-		m_clients.emplace(guid, client);
+		{
+			folly::SharedMutex::WriteHolder writeHolder(m_clientMutex);
+			m_clients.emplace(guid, client);
+		}
+		
 		client->OnAssignNetId.Connect([this, weakClient]()
 		{
 			m_clientsByNetId[weakClient.lock()->GetNetId()] = weakClient;
@@ -134,7 +138,7 @@ namespace fx
 		 #/
 		declare function playerJoining(source: string, oldID: string): void;
 		*/
-		eventManager->TriggerEvent2("playerJoining", { fmt::sprintf("net:%d", client->GetNetId()) }, fmt::sprintf("%d", oldNetID));
+		eventManager->TriggerEvent2("playerJoining", { fmt::sprintf("internal-net:%d", client->GetNetId()) }, fmt::sprintf("%d", oldNetID));
 
 		// user code may lead to a drop event being sent here
 		if (client->IsDropping())

@@ -8,6 +8,7 @@
 #include <NetBuffer.h>
 
 #include <lz4.h>
+#include <lz4hc.h>
 
 #include <tbb/concurrent_queue.h>
 #include <tbb/parallel_for_each.h>
@@ -704,7 +705,7 @@ void ServerGameState::Tick(fx::ServerInstanceBase* instance)
 					// entity was requested as delete, nobody knows of it anymore: finalize
 					if (entity->deleting)
 					{
-						FinalizeClone({}, entity->handle, 0, "Requested deletion");
+						FinalizeClone({}, entity, entity->handle, 0, "Requested deletion");
 						continue;
 					}
 					// it's a client-owned entity, let's check for a few things
@@ -714,14 +715,14 @@ void ServerGameState::Tick(fx::ServerInstanceBase* instance)
 						if (entity->firstOwnerDropped)
 						{
 							// we can delete
-							FinalizeClone({}, entity->handle, 0, "First owner dropped");
+							FinalizeClone({}, entity, entity->handle, 0, "First owner dropped");
 							continue;
 						}
 					}
 					// it's a script-less entity, we can collect it.
 					else if (!entity->IsOwnedByScript() && (entity->type != sync::NetObjEntityType::Player || !entity->GetClient()))
 					{
-						FinalizeClone({}, entity->handle, 0, "Regular entity GC");
+						FinalizeClone({}, entity, entity->handle, 0, "Regular entity GC");
 						continue;
 					}
 				}
@@ -838,7 +839,7 @@ void ServerGameState::Tick(fx::ServerInstanceBase* instance)
 					float diffY = entityPos.y - playerPos.y;
 
 					float distSquared = (diffX * diffX) + (diffY * diffY);
-					if (distSquared < entity->GetDistanceCullingRadius())
+					if (distSquared < entity->GetDistanceCullingRadius(clientDataUnlocked->GetPlayerCullingRadius())) 
 					{
 						isRelevant = true;
 					}
@@ -1090,7 +1091,8 @@ void ServerGameState::Tick(fx::ServerInstanceBase* instance)
 	// gather client refs
 	eastl::fixed_vector<fx::ClientSharedPtr, MAX_CLIENTS> clientRefs;
 
-	creg->ForAllClients([&clientRefs](const fx::ClientSharedPtr& clientRef)
+	// since we're doing essentially the same thing as what ForAllClients does, we use ForAllClientsLocked to prevent extra copies
+	creg->ForAllClientsLocked([&clientRefs](const fx::ClientSharedPtr& clientRef)
 	{
 		clientRefs.push_back(clientRef);
 	});
@@ -1865,6 +1867,7 @@ void ServerGameState::UpdateEntities()
 					if (curVehicleData && curVehicleData->occupants[vehicleData->curVehicleSeat] == 0)
 					{
 						curVehicleData->occupants[vehicleData->curVehicleSeat] = pedHandle;
+						curVehicleData->lastOccupant[vehicleData->curVehicleSeat] = pedHandle;
 
 						if (entity->type == sync::NetObjEntityType::Player)
 						{
@@ -2715,7 +2718,7 @@ void ServerGameState::RemoveClone(const fx::ClientSharedPtr& client, uint16_t ob
 	}
 }
 
-void ServerGameState::FinalizeClone(const fx::ClientSharedPtr& client, uint16_t objectId, uint16_t uniqifier, std::string_view finalizeReason)
+void ServerGameState::FinalizeClone(const fx::ClientSharedPtr& client, const fx::sync::SyncEntityPtr& entity, uint16_t objectId, uint16_t uniqifier, std::string_view finalizeReason)
 {
 	sync::SyncEntityPtr entityRef;
 
@@ -2724,7 +2727,7 @@ void ServerGameState::FinalizeClone(const fx::ClientSharedPtr& client, uint16_t 
 		entityRef = m_entitiesById[objectId].lock();
 	}
 
-	if (entityRef)
+	if (entityRef && entityRef == entity)
 	{
 		if (!entityRef->finalizing)
 		{
@@ -2732,36 +2735,36 @@ void ServerGameState::FinalizeClone(const fx::ClientSharedPtr& client, uint16_t 
 
 			GS_LOG("%s: finalizing object %d (for reason %s)\n", __func__, objectId, finalizeReason);
 
-			bool stolen = false;
-
-			{
-				std::unique_lock objectIdsLock(m_objectIdsMutex);
-				m_objectIdsUsed.reset(objectId);
-
-				if (m_objectIdsStolen.test(objectId))
-				{
-					stolen = true;
-
-					m_objectIdsSent.reset(objectId);
-					m_objectIdsStolen.reset(objectId);
-				}
-			}
-
-			if (stolen)
-			{
-				fx::ClientSharedPtr clientRef = entityRef->GetClient();
-				if (clientRef)
-				{
-					auto [lock, clientData] = GetClientData(this, clientRef);
-					clientData->objectIds.erase(objectId);
-				}
-			}
-
 			OnCloneRemove(entityRef, [this, objectId, entityRef]()
 			{
 				{
 					std::unique_lock entitiesByIdLock(m_entitiesByIdMutex);
 					m_entitiesById[objectId].reset();
+				}
+
+				bool stolen = false;
+
+				{
+					std::unique_lock objectIdsLock(m_objectIdsMutex);
+					m_objectIdsUsed.reset(objectId);
+
+					if (m_objectIdsStolen.test(objectId))
+					{
+						stolen = true;
+
+						m_objectIdsSent.reset(objectId);
+						m_objectIdsStolen.reset(objectId);
+					}
+				}
+
+				if (stolen)
+				{
+					fx::ClientSharedPtr clientRef = entityRef->GetClient();
+					if (clientRef)
+					{
+						auto [lock, clientData] = GetClientData(this, clientRef);
+						clientData->objectIds.erase(objectId);
+					}
 				}
 
 				{
@@ -3225,8 +3228,12 @@ static std::tuple<std::optional<net::Buffer>, uint32_t> UncompressClonePacket(co
 		return { std::optional<net::Buffer>{}, type };
 	}
 
-	uint8_t bufferData[16384] = { 0 };
-	int bufferLength = LZ4_decompress_safe(reinterpret_cast<const char*>(&readBuffer.GetData()[4]), reinterpret_cast<char*>(bufferData), readBuffer.GetRemainingBytes(), sizeof(bufferData));
+	const static uint8_t dictBuffer[65536] = 
+	{
+#include <state/dict_five_20210329.h>
+	};
+	uint8_t bufferData[16384];
+	int bufferLength = LZ4_decompress_safe_usingDict(reinterpret_cast<const char*>(&readBuffer.GetData()[4]), reinterpret_cast<char*>(bufferData), readBuffer.GetRemainingBytes(), sizeof(bufferData), reinterpret_cast<const char*>(dictBuffer), std::size(dictBuffer));
 
 	if (bufferLength <= 0)
 	{
