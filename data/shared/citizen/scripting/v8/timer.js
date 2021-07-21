@@ -11,10 +11,10 @@
 
     let animationFrames = [];
 
-    function setTimer(timer, callback, timeout) {
+    function setTimer(timer, callback, interval) {
         timers[timer.id] = {
             callback,
-            Math.max(0, timeout) || 0,
+            Math.max(0, interval) || 0,
             lastRun: gameTime
         };
     }
@@ -117,7 +117,7 @@
         for (const timerId in timers) {
             const timer = timers[timerId];
 
-            if ((localGameTime - timer.lastRun) > timer.timeout) {
+            if ((localGameTime - timer.lastRun) > timer.interval) {
                 try {
                     timer.callback();
                 } catch (e) {
